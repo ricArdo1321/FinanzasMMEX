@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.tox/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# C# / .NET
+[Bb]in/
+[Oo]bj/
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+.vscode/
+
+# Project Specific
+staging.db
+*.mmb
+*.emb
+logs/
+reports/*.html
+secrets/*.json
+!secrets/placeholder.json
+.env
+
+# OS
+.DS_Store
+Thumbs.db
