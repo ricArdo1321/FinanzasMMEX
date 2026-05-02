@@ -67,6 +67,24 @@ Every CLI command must return JSON `{ok, data, errors, warnings, run_id}`. Error
   - Productive data lives outside repo at `C:\Finanzas\` (mmb, backups, logs, drop, reports). Repo holds code only.
   - `.mmb` operates inside BitLocker-encrypted folder.
 
+## Subagentes Claude Code disponibles
+
+Roster en `.claude/agents/` (catálogo: `.claude/agents/README.md`). Triggers:
+
+| Agente | Modelo | Cuándo dispara |
+|---|---|---|
+| `parser-reviewer` | sonnet | Edit en `src/finanzasmmex/adapters/*` |
+| `mmex-writer-guard` | opus | Edit en `src/finanzasmmex/writer/*` o lógica MMEX |
+| `secrets-pii-auditor` | opus | Pre-commit/PR, `vault.py`, fixtures, logs |
+| `cli-contract-checker` | sonnet | Edit en `cli.py` o `contracts/*` |
+| `staging-schema-validator` | sonnet | Edit en `staging/schema.sql` o `repo.py` |
+| `wpf-ui-reviewer` | sonnet | Edit en `desktop/**` |
+| `fixtures-anonymizer` | sonnet | Invocación explícita con archivo fuente |
+
+Phase gates: Phase 1 merge → parser-reviewer + cli-contract-checker + secrets-pii-auditor sin `blocker`. Phase 2 → suma writer-guard + schema-validator + shadow-mode 1 semana. Phase 4 → suma wpf-ui-reviewer.
+
+Casos de validación de los agentes en `tests/agent_cases/<agent>/{good,bad}/`. Spec completo: `docs/superpowers/specs/2026-05-02-claude-subagents-design.md`.
+
 ## Reference docs in repo
 
 - `PLAN2.md` — **definitive plan** (hybrid stack). Supersedes PLAN.md and implementation_plan.md on stack questions.

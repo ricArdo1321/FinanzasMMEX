@@ -1,0 +1,17 @@
+From: BancoEstado <notificaciones@bancoestado.cl>
+To: juan.perez.gonzalez@gmail.com
+Subject: Aviso compra tarjeta crédito
+
+Estimado(a) Juan Pérez González,
+
+Su tarjeta terminada en 4532-1488-0343-6467 ha realizado una compra:
+
+Comercio: STARBUCKS PROVIDENCIA
+Monto: $ 4.500
+Fecha: 01/05/2026
+
+RUT: 16.234.567-8
+Teléfono: +56 9 8123 4567
+Dirección: Av. Providencia 1234, Santiago
+
+Si no reconoce esta operación, comuníquese con nosotros.

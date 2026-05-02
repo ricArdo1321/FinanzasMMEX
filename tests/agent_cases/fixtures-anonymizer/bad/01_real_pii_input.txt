@@ -1,0 +1,17 @@
+From: BancoEstado <notificaciones@bancoestado.cl>
+To: maria.gonzalez.silva@gmail.com
+Subject: Aviso compra tarjeta crédito
+
+Estimada María González Silva,
+
+Su tarjeta terminada en 4532-7654-3210-9876 (PAN: 4532765432109876) ha realizado una compra:
+
+Comercio: STARBUCKS LAS CONDES
+Monto: $ 4.500
+Fecha: 01/05/2026
+
+Datos del titular:
+- RUT: 17.456.789-2
+- Cuenta corriente: 00012345678
+- Teléfono: +56 9 8765 4321
+- Dirección: Av. Apoquindo 4500, Las Condes

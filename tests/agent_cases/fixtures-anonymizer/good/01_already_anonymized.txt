@@ -1,0 +1,14 @@
+From: BancoEstado <notificaciones@example.com>
+To: user-01@example.com
+Subject: Aviso compra tarjeta crédito
+
+Estimado(a) Persona-A,
+
+Su tarjeta terminada en ****-****-****-1234 ha realizado una compra:
+
+Comercio: COMERCIO ANONIMIZADO
+Monto: $ 25.000
+Fecha: 01/05/2026
+
+RUT: 11.111.111-1
+Teléfono: +56-9-****-****
