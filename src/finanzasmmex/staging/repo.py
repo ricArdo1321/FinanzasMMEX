@@ -11,18 +11,18 @@ class StagingRepo:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def _get_connection(self):
+    def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def init_db(self, schema_path: str):
+    def init_db(self, schema_path: str) -> None:
         with open(schema_path, "r") as f:
             schema = f.read()
         with self._get_connection() as conn:
             conn.executescript(schema)
 
-    def upsert_tx(self, tx: CanonicalTx):
+    def upsert_tx(self, tx: CanonicalTx) -> None:
         sql = """
         INSERT INTO canonical_tx (
             tx_uid, owner, source_type, source_file, source_ref, content_sha256, raw_text,
@@ -97,12 +97,12 @@ class StagingRepo:
             else None,
             amount=Decimal(str(row["amount"])),
             currency=row["currency"],
-            direction=row["direction"],
+            direction=row["direction"],  # type: ignore
             account_alias=row["account_alias"],
             card_last4=row["card_last4"],
             merchant_raw=row["merchant_raw"],
             merchant_norm=row["merchant_norm"],
-            tx_type=row["tx_type"],
+            tx_type=row["tx_type"],  # type: ignore
             category_guess=row["category_guess"],
             subcategory_guess=row["subcategory_guess"],
             tags=json.loads(row["tags_json"]),
@@ -113,6 +113,6 @@ class StagingRepo:
             review_reason=row["review_reason"],
             mmex_account_id=row["mmex_account_id"],
             mmex_tx_id=row["mmex_tx_id"],
-            mmex_status=row["mmex_status"],
+            mmex_status=row["mmex_status"],  # type: ignore
             transfer_pair_uid=row["transfer_pair_uid"],
         )

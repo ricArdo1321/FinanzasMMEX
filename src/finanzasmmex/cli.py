@@ -2,14 +2,17 @@ import argparse
 import json
 import sys
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .staging.repo import StagingRepo
 
 
 def _emit(
-    ok: bool, data: Any = None, errors: List[Dict] = None, warnings: List[str] = None
-):
+    ok: bool,
+    data: Any = None,
+    errors: Optional[List[Dict[str, Any]]] = None,
+    warnings: Optional[List[str]] = None,
+) -> None:
     """Encapsula la respuesta en el contrato JSON estándar."""
     response = {
         "ok": ok,
@@ -19,12 +22,10 @@ def _emit(
         "run_id": str(uuid.uuid4()),
     }
     print(json.dumps(response, indent=2))
-    sys.exit(
-        0 if ok else 1
-    )  # Simplificado para MVP; los exit codes específicos se añadirán según PLAN2
+    sys.exit(0 if ok else 1)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="FinanzasMMEX CLI")
     subparsers = parser.add_subparsers(dest="command")
 

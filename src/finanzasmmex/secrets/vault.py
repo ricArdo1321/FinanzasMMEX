@@ -7,7 +7,7 @@ import keyring
 class Vault:
     SERVICE_NAME = "FinanzasMMEX"
 
-    def set_secret(self, key: str, value: Any):
+    def set_secret(self, key: str, value: Any) -> None:
         """Almacena un secreto en el Windows Credential Manager."""
         if isinstance(value, (dict, list)):
             value = json.dumps(value)
@@ -22,12 +22,15 @@ class Vault:
         val = self.get_secret(key)
         if val:
             try:
-                return json.loads(val)
+                data = json.loads(val)
+                if isinstance(data, dict):
+                    return data
+                return None
             except json.JSONDecodeError:
                 return None
         return None
 
-    def delete_secret(self, key: str):
+    def delete_secret(self, key: str) -> None:
         """Elimina un secreto."""
         try:
             keyring.delete_password(self.SERVICE_NAME, key)
