@@ -67,12 +67,13 @@ Every CLI command must return JSON `{ok, data, errors, warnings, run_id}`. Error
   - Productive data lives outside repo at `C:\Finanzas\` (mmb, backups, logs, drop, reports). Repo holds code only.
   - `.mmb` operates inside BitLocker-encrypted folder.
 
-## Subagentes Claude Code disponibles
+## Subagentes disponibles
 
-Roster en `.claude/agents/` (catálogo: `.claude/agents/README.md`). Triggers:
+Roster en `.gemini/agents/` (anteriormente en `.claude/agents/`). Triggers y especialidades:
 
-| Agente | Modelo | Cuándo dispara |
+| Agente | Modelo | Cuándo dispara / Especialidad |
 |---|---|---|
+| `finanzas-orchestrator` | master | Agente maestro. Coordina a los especialistas. |
 | `parser-reviewer` | sonnet | Edit en `src/finanzasmmex/adapters/*` |
 | `mmex-writer-guard` | opus | Edit en `src/finanzasmmex/writer/*` o lógica MMEX |
 | `secrets-pii-auditor` | opus | Pre-commit/PR, `vault.py`, fixtures, logs |
