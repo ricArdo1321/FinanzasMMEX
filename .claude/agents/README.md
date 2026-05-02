@@ -1,6 +1,6 @@
 # Subagentes Claude Code — FinanzasMMEX
 
-Roster fijo de 7 subagentes dev-workflow. Cubren los puntos críticos del PLAN2 sin solaparse. Cada agente lee `CLAUDE.md` y `PLAN2.md` al arrancar.
+Roster fijo de 8 subagentes dev-workflow. Cubren los puntos críticos del PLAN2 sin solaparse. Cada agente lee `CLAUDE.md` y `PLAN2.md` al arrancar.
 
 ## Catálogo
 
@@ -13,12 +13,14 @@ Roster fijo de 7 subagentes dev-workflow. Cubren los puntos críticos del PLAN2 
 | `staging-schema-validator` | sonnet | Edit en `staging/schema.sql` o `repo.py` | major | Phase 2 merge |
 | `wpf-ui-reviewer` | sonnet | Edit en `desktop/**` | major | Phase 4 merge |
 | `fixtures-anonymizer` | sonnet | Invocación explícita con archivo fuente | n/a (writer agent) | continuo |
+| `agent-orchestrator` | sonnet | Cambios multi-area, phase gates, pre-merge/pre-PR, o decidir que agentes usar | blocker si falta un gate requerido | todos |
 
 ## Anti-overlap
 
 - `parser-reviewer` no chequea secretos → `secrets-pii-auditor`.
 - `mmex-writer-guard` no valida schema staging → `staging-schema-validator`.
 - `cli-contract-checker` no revisa lógica WPF → `wpf-ui-reviewer`.
+- `agent-orchestrator` no reemplaza a especialistas; delega con `Task` y consolida resultados.
 - Cada agente lista hallazgos fuera de scope en `out-of-scope:` y delega.
 
 ## Cuándo invocarlos
@@ -30,9 +32,11 @@ Roster fijo de 7 subagentes dev-workflow. Cubren los puntos críticos del PLAN2 
 - cli-contract-checker al editar cli.py.
 - wpf-ui-reviewer al editar desktop/.
 - secrets-pii-auditor antes de commits/PRs y al tocar archivos sensibles.
+- agent-orchestrator cuando el cambio toque mas de un dominio, sea un phase gate, o el usuario pida usar/coordinar agentes.
 
 **Explícitos** (invocación manual):
 - fixtures-anonymizer — siempre. Pasarle path del archivo fuente real.
+- agent-orchestrator cuando se quiera una auditoria integral coordinada o saber que agentes corresponden.
 - Cualquier otro cuando se quiera ejecutar como auditoría puntual.
 
 ## Phase gates
@@ -44,6 +48,8 @@ Roster fijo de 7 subagentes dev-workflow. Cubren los puntos críticos del PLAN2 
 | Phase 4 (UI + reportes) | + wpf-ui-reviewer |
 
 Phases 3 (scraping headful) y 5 (Laura) heredan los gates de Phase 2 + 4. Si se necesitan agentes específicos para esas fases, agregar al catálogo.
+
+`agent-orchestrator` puede coordinar cualquier phase gate, pero el gate se considera cumplido solo por los especialistas requeridos para esa fase.
 
 ## Validación de los propios agentes
 
@@ -69,12 +75,12 @@ out-of-scope:
 summary: <1-2 líneas>
 ```
 
-Algunos agentes agregan secciones específicas (coverage_table, schema_check, contract_diff, boundary_check, postflight_audit). Ver el `.md` de cada uno.
+Algunos agentes agregan secciones específicas (coverage_table, schema_check, contract_diff, boundary_check, postflight_audit, delegation_plan, gate_status). Ver el `.md` de cada uno.
 
 ## Modelos
 
 - `opus`: `mmex-writer-guard`, `secrets-pii-auditor`. Costo de falso negativo catastrófico.
-- `sonnet`: el resto.
+- `sonnet`: `agent-orchestrator` y el resto.
 
 ## Modificar el roster
 

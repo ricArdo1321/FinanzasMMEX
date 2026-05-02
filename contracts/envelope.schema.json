@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FinanzasMMEX CLI Response",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "True if the command was successful"
+    },
+    "data": {
+      "description": "Result data of the command (varies by command)"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "details": { "type": "object" }
+        },
+        "required": ["code", "message"]
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for the execution"
+    }
+  },
+  "required": ["ok", "run_id"]
+}

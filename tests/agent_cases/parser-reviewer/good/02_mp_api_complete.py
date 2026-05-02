@@ -1,7 +1,6 @@
 # GOOD: MP API adapter, complete CanonicalTx, ISO dates from API JSON,
 # direction inferred from `operation_type`, parser metadata explicit.
 import hashlib
-import json
 from datetime import date
 from decimal import Decimal
 

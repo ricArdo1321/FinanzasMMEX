@@ -1,6 +1,8 @@
-import keyring
 import json
 from typing import Any, Dict
+
+import keyring
+
 
 class Vault:
     SERVICE_NAME = "FinanzasMMEX"

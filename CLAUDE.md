@@ -69,11 +69,11 @@ Every CLI command must return JSON `{ok, data, errors, warnings, run_id}`. Error
 
 ## Subagentes disponibles
 
-Roster en `.gemini/agents/` (anteriormente en `.claude/agents/`). Triggers y especialidades:
+Roster en `.claude/agents/` (catálogo: `.claude/agents/README.md`). Triggers y especialidades:
 
 | Agente | Modelo | Cuándo dispara / Especialidad |
 |---|---|---|
-| `finanzas-orchestrator` | master | Agente maestro. Coordina a los especialistas. |
+| `agent-orchestrator` | sonnet | Coordina especialistas con `Task`; usar en cambios multi-area, phase gates, pre-merge/pre-PR, o para decidir que agentes corresponden. |
 | `parser-reviewer` | sonnet | Edit en `src/finanzasmmex/adapters/*` |
 | `mmex-writer-guard` | opus | Edit en `src/finanzasmmex/writer/*` o lógica MMEX |
 | `secrets-pii-auditor` | opus | Pre-commit/PR, `vault.py`, fixtures, logs |
@@ -82,7 +82,7 @@ Roster en `.gemini/agents/` (anteriormente en `.claude/agents/`). Triggers y esp
 | `wpf-ui-reviewer` | sonnet | Edit en `desktop/**` |
 | `fixtures-anonymizer` | sonnet | Invocación explícita con archivo fuente |
 
-Phase gates: Phase 1 merge → parser-reviewer + cli-contract-checker + secrets-pii-auditor sin `blocker`. Phase 2 → suma writer-guard + schema-validator + shadow-mode 1 semana. Phase 4 → suma wpf-ui-reviewer.
+Phase gates: `agent-orchestrator` puede coordinar la revision, pero los gates se cumplen por los especialistas. Phase 1 merge → parser-reviewer + cli-contract-checker + secrets-pii-auditor sin `blocker`. Phase 2 → suma writer-guard + schema-validator + shadow-mode 1 semana. Phase 4 → suma wpf-ui-reviewer.
 
 Casos de validación de los agentes en `tests/agent_cases/<agent>/{good,bad}/`. Spec completo: `docs/superpowers/specs/2026-05-02-claude-subagents-design.md`.
 

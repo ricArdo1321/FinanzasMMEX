@@ -27,7 +27,10 @@ def cmd_init(args) -> int:
         emit(ok=True, data={"db_path": args.db})
         return 0
     except ValueError as e:
-        emit(ok=False, errors=[{"code": "VALIDATION", "message": str(e), "details": None}])
+        emit(
+            ok=False,
+            errors=[{"code": "VALIDATION", "message": str(e), "details": None}],
+        )
         return 2
     except PermissionError as e:
         emit(
