@@ -1,0 +1,775 @@
+﻿Warning: TT: undefined function: 21
+Warning: TT: undefined function: 21
+
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+PLAN DE ARQUITECTURA EXHAUSTIVO 
+App desktop financiera local para Gmail, Mercado Pago, archivos bancarios y Money 
+Manager Ex (MMEX) 
+Documento t├®cnico para Ricardo 
+Versi├│n 1.0 - 02 de mayo de 2026 
+Veredicto arquitect├│nico 
+La app desktop no debe ser un lector de correos que escribe directamente en MMEX. Debe ser una plataforma local de conciliaci├│n 
+financiera, con base can├│nica propia, conectores por fuente, revisi├│n humana controlada y exportaci├│n segura hacia Money Manager 
+Ex. 
+ 
+Campo Descripci├│n 
+Cliente / usuario Ricardo 
+Objetivo Construir una app desktop local para capturar, normalizar, deduplicar, revisar, analizar y exportar movimientos 
+financieros familiares hacia MMEX. 
+Restricci├│n principal Privacidad local: no enviar documentos bancarios ni datos sensibles a servicios externos. 
+Estrategia recomendada Arquitectura local-first con staging SQLite, workers de extracci├│n, motor de conciliaci├│n y exportaci├│n MMEX 
+por CSV/QIF en MVP. 
+Fuentes base Informes t├®cnicos: Claude, Gemini, NotebookLM y OpenAI; m├ís las decisiones de arquitectura definidas 
+durante la conversaci├│n. 
+ 
+  
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+├ìndice 
+1. Resumen ejecutivo 
+2. Objetivo funcional de la app 
+3. Principios rectores de arquitectura 
+4. Arquitectura general 
+5. Stack tecnol├│gico recomendado 
+6. Capas y m├│dulos del sistema 
+7. Fuentes de datos e ingesta 
+8. Capa RAW y conservaci├│n de evidencia 
+9. Modelo de datos local 
+10. Normalizaci├│n, categorizaci├│n y reglas 
+11. Dedupe y conciliaci├│n 
+12. Integraci├│n con Money Manager Ex 
+13. Seguridad, privacidad y backups 
+14. Dashboard financiero 
+15. Scheduler y automatizaci├│n local 
+16. Estructura del proyecto 
+17. Contratos JSON entre C# y Python 
+18. Validaciones obligatorias 
+19. Roadmap de desarrollo 
+20. Estrategia de pruebas 
+21. Riesgos y mitigaciones 
+22. Criterios de ├®xito del MVP 
+23. Ap├®ndices t├®cnicos 
+  
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+1. Resumen ejecutivo 
+Este documento propone una arquitectura completa para desarrollar una app desktop financiera local, orientada a 
+consolidar movimientos provenientes de Gmail, Mercado Pago, archivos bancarios, estados de cuenta, PDFs, im├ígenes y 
+entradas manuales, para luego analizarlos y exportarlos a Money Manager Ex (MMEX). 
+La decisi├│n central es separar la captura y transformaci├│n de datos del libro contable final. En otras palabras: MMEX debe 
+ser el destino contable, no la base operativa de ingesti├│n. La app debe mantener una base can├│nica propia en SQLite, con 
+evidencia cruda, normalizaci├│n, deduplicaci├│n, revisi├│n humana y exportaci├│n controlada. 
+Decisi├│n principal 
+No se recomienda escribir directamente sobre el archivo .mmb en la primera versi├│n. El MVP debe exportar CSV/QIF compatible con 
+MMEX. La escritura directa SQLite debe quedar para una fase avanzada, con backups, validaci├│n de esquema y transacciones ACID. 
+ 
+ÔÇó Los correos son una fuente r├ípida, pero incompleta: no todas las transacciones llegan por email. 
+ÔÇó Los estados de cuenta CSV/OFX/QIF/PDF son mejores como fuente de verdad peri├│dica, pero llegan tarde y pueden 
+duplicar correos previos. 
+ÔÇó La app debe fusionar movimientos de distintas fuentes en una sola transacci├│n can├│nica. 
+ÔÇó Los pagos rechazados deben alimentar alertas, pero no afectar el balance contable. 
+ÔÇó Los pagos de tarjetas deben modelarse como transferencias internas cuando la tarjeta existe como cuenta MMEX. 
+ÔÇó El sistema debe operar localmente, preservando evidencia y evitando enviar datos bancarios a la nube. 
+2. Objetivo funcional de la app 
+La app debe funcionar como una consola local de control financiero familiar. No debe limitarse a importar datos; debe 
+ayudar a interpretar, depurar y conciliar movimientos antes de que entren a MMEX. 
+Objetivo Descripci├│n operativa 
+Capturar movimientos Leer Gmail/correo, API de Mercado Pago, carpetas locales, CSV, OFX, QIF, PDF, im├ígenes y entradas 
+manuales. 
+Detectar eventos financieros Compras, pagos, transferencias, abonos, reembolsos, cuotas, pagos rechazados y suscripciones. 
+Normalizar datos Convertir fechas, montos, comercios, cuentas, tarjetas y categor├¡as a un modelo can├│nico estable. 
+Evitar duplicados Fusionar correo + estado de cuenta + PDF + API cuando representan el mismo movimiento. 
+Revisar casos dudosos Enviar a cola de revisi├│n humana los movimientos con baja confianza, balances inconsistentes o cuenta 
+desconocida. 
+Exportar a MMEX Generar CSV/QIF importable en el MVP y habilitar escritura directa SQLite en fase avanzada. 
+Analizar finanzas Mostrar dashboard de gastos, ingresos, suscripciones, pagos rechazados, deudas y movimientos pendientes. 
+ 
+3. Principios rectores de arquitectura 
+Principio Decisi├│n arquitect├│nica 
+Local-first Toda la persistencia operativa vive en SQLite local y en carpetas controladas por el usuario. 
+MMEX como destino El archivo .mmb/.emb no debe ser usado como staging ni como punto de ingesti├│n inicial. 
+Staging obligatorio Todo artefacto se procesa primero en staging.db antes de exportarse. 
+Evidencia preservada Correos, PDFs, CSV, JSON API, OCR y extractos originales se conservan con hash SHA-256. 
+Idempotencia Reprocesar un lote no debe duplicar transacciones. 
+Revisi├│n humana El sistema automatiza lo repetible y deriva lo ambiguo a revisi├│n. 
+Seguridad por defecto Tokens cifrados, logs sin secretos, backups autom├íticos y m├¡nimo privilegio. 
+Automatizaci├│n progresiva Primero importaci├│n segura por CSV/QIF; despu├®s, SQLite directo si el flujo es estable. 
+ 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+4. Arquitectura general 
+La arquitectura propuesta se organiza en capas: UI desktop, orquestador local, conectores, capa RAW, workers de 
+extracci├│n, base can├│nica, motor ETL, deduplicaci├│n/conciliaci├│n, revisi├│n humana e integraci├│n MMEX. 
++-------------------------------------------------------------+ 
+|                    APP DESKTOP FINANCIERA                   | 
+|                  C#/.NET + Avalonia/WPF                     | 
++-------------------------------------------------------------+ 
+                              | 
+                              v 
++-------------------------------------------------------------+ 
+|                  ORQUESTADOR LOCAL                          | 
+|  Scheduler | Jobs | Locks | Logs | Backups | Configuracion  | 
++-------------------------------------------------------------+ 
+                              | 
+        +---------------------+---------------------+ 
+        v                     v                     v 
++--------------+     +----------------+     +----------------+ 
+| Gmail/Email  |     | Mercado Pago   |     | Archivos       | 
+| API/IMAP     |     | API oficial    |     | CSV/PDF/OFX    | 
++--------------+     +----------------+     +----------------+ 
+        |                     |                     | 
+        v                     v                     v 
++-------------------------------------------------------------+ 
+|                CAPA RAW / EVIDENCIA                         | 
+| Correos .eml | Adjuntos | PDFs | CSV | JSON API | Capturas   | 
++-------------------------------------------------------------+ 
+                              | 
+                              v 
++-------------------------------------------------------------+ 
+|                  WORKERS DE EXTRACCION                      | 
+| Regex | HTML parser | PDF parser | OCR | LLM local opcional | 
++-------------------------------------------------------------+ 
+                              | 
+                              v 
++-------------------------------------------------------------+ 
+|                  STAGING.DB / BASE CANONICA                 | 
+| raw_artifacts | parsed_events | canonical_tx | review_queue  | 
++-------------------------------------------------------------+ 
+                              | 
+                              v 
++-------------------------------------------------------------+ 
+|          DEDUPLICACION + CONCILIACION + REVISION            | 
+| hash FITID | fuzzy matching | transfer matching | scoring     | 
++-------------------------------------------------------------+ 
+                              | 
+                              v 
++-------------------------------------------------------------+ 
+|                    INTEGRACION MMEX                         | 
+| Fase 1: CSV/QIF importable | Fase 2: SQLite directo          | 
++-------------------------------------------------------------+ 
+ 
+5. Stack tecnol├│gico recomendado 
+La recomendaci├│n m├ís s├│lida es una arquitectura h├¡brida: C#/.NET para la app desktop, dominio, UI, seguridad y 
+orquestaci├│n; Python para extracci├│n avanzada, parsing, OCR, normalizaci├│n documental y fuzzy matching. 
+Capa Tecnolog├¡a recomendada Motivo 
+App desktop C# .NET 8/9 + Avalonia UI o WPF Interfaz robusta, buen soporte en Windows y empaquetado 
+profesional. 
+Dominio y reglas C#/.NET Mantiene reglas de negocio, estados, validaciones y seguridad en un 
+n├║cleo estable. 
+Base local SQLite + WAL Simple, portable, local, sin servidor y suficiente para el volumen 
+dom├®stico. 
+Secretos Windows DPAPI / Credential Manager Evita guardar tokens OAuth o credenciales en texto plano. 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+Parsing PDF/OCR Python + pdfplumber + PyMuPDF + 
+Tesseract 
+Ecosistema superior para documentos bancarios y OCR local. 
+Normalizaci├│n Python + pandas + RapidFuzz Muy efectivo para fechas, montos, CSV heterog├®neos y comercios 
+difusos. 
+IA local opcional Ollama/Qwen local Ayuda ante plantillas de correo cambiantes sin enviar datos a la nube. 
+MMEX CSV/QIF primero; SQLite directo despu├®s Reduce riesgo de corrupci├│n y permite madurez progresiva. 
+ 
+Recomendaci├│n objetiva 
+Hacerlo todo en C# complicar├¡a PDF/OCR/parsing. Hacerlo todo en Python complicar├¡a la experiencia desktop y el empaquetado. La 
+soluci├│n h├¡brida es menos purista, pero m├ís robusta. 
+ 
+6. Capas y m├│dulos del sistema 
+M├│dulo Responsabilidad 
+Desktop UI Dashboard, bandejas, revisi├│n, reglas, configuraci├│n, exportaciones y reportes. 
+Orquestador local Ejecutar jobs, controlar locks, programar sincronizaciones, crear lotes y registrar logs. 
+Connectors Gmail, IMAP opcional, Mercado Pago, carpetas locales, entrada manual y futuro browser asistido. 
+File Storage Guardar artefactos crudos, adjuntos, hashes, OCR y versiones procesadas. 
+Extraction Workers Convertir emails, HTML, CSV, PDF, OCR e im├ígenes en candidatos JSON. 
+ETL Engine Normalizar fechas, montos, direcci├│n, cuentas, payees, categor├¡as y tipos de movimiento. 
+Dedupe Engine Detectar duplicados exactos, hashes de negocio, fuzzy matches y ventanas temporales. 
+Reconciliation Engine Fusionar fuentes, detectar transferencias internas, pagos de tarjeta y reembolsos. 
+Review Queue Gestionar casos dudosos, errores de parser y validaciones fallidas. 
+MMEX Exporter Generar CSV/QIF y, en fase avanzada, insertar en SQLite con transacciones ACID. 
+Security Layer Cifrado de secretos, pol├¡ticas de logs, backups, borrado seguro y permisos. 
+ 
+7. Fuentes de datos e ingesta 
+La app no debe asumir una ├║nica fuente de verdad. Cada fuente debe tener un conector, un parser, reglas de confianza y un 
+m├®todo de conciliaci├│n posterior. 
+Fuente Uso Confiabilidad Tratamiento 
+Gmail/correo Captura temprana de compras, 
+pagos, transferencias y rechazos. 
+Media Parser HTML/texto, reglas por banco, evidencia 
+.eml y dedupe posterior. 
+Mercado Pago API Movimientos estructurados de 
+wallet, pagos, cobros, comisiones y 
+reembolsos. 
+Alta OAuth oficial, JSON API, normalizaci├│n directa. 
+CSV bancario Cartolas y estados de cuenta 
+estructurados. 
+Alta Adaptador por banco, validaci├│n de saldo y dedupe 
+contra emails. 
+OFX/QIF Formatos financieros de 
+intercambio. 
+Alta Parser estructurado y exportaci├│n/importaci├│n m├ís 
+limpia. 
+PDF nativo Estados de cuenta o comprobantes 
+con texto embebido. 
+Media pdfplumber/PyMuPDF, extracci├│n tabular y 
+revisi├│n. 
+PDF escaneado/imagen Capturas, boletas o cartolas sin 
+texto. 
+Baja OCR local, confianza baja y revisi├│n humana. 
+Entrada manual Movimientos que nunca llegan por 
+correo ni exporte. 
+Variable Formulario local con validaciones y evidencia 
+opcional. 
+Navegaci├│n asistida Descarga manual guiada desde 
+bancos complejos. 
+Media Browser visible, sin evasi├│n de controles ni scraping 
+invisible. 
+ 
+7.1. Gmail y correo financiero 
+ÔÇó Conectar con Gmail mediante OAuth; IMAP puede quedar como alternativa. 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+ÔÇó Filtrar correos por remitente, asunto, etiquetas y palabras clave financieras. 
+ÔÇó Considerar dos destinatarios: el correo principal y el correo redirigido. 
+ÔÇó Guardar el mensaje bruto, texto limpio, HTML, adjuntos y hashes. 
+ÔÇó Extraer candidatos, no transacciones definitivas. 
+ÔÇó Marcar pagos rechazados como eventos informativos que no afectan balance. 
+Consulta Gmail sugerida: 
+from:(bancoestado OR falabella OR cmr OR bci OR mach OR mercadopago) 
+OR subject:(compra OR cargo OR transferencia OR abono OR rechazado OR pago) 
+OR ("pago rechazado" OR "compra realizada" OR "transferencia recibida") 
+ 
+7.2. Mercado Pago 
+ÔÇó Usar API oficial con OAuth, no scraping. 
+ÔÇó Importar pagos realizados, pagos recibidos, reembolsos, comisiones y transferencias a banco. 
+ÔÇó Normalizar wallet como una cuenta propia en MMEX. 
+ÔÇó Deducir comisiones como gasto financiero cuando corresponda. 
+ÔÇó Conciliar correos de Mercado Pago con movimientos API para no duplicar. 
+7.3. Bancos chilenos y scraping 
+Para BancoEstado, Falabella/CMR, Mach/BCI y fuentes similares, la app no debe depender de scraping bancario 
+desatendido. La estrategia recomendable es correo + exportes + descarga manual guiada + procesamiento local. Si se 
+implementa browser asistido, debe ser visible, con autenticaci├│n manual del usuario y sin evasi├│n de controles. 
+8. Capa RAW y conservaci├│n de evidencia 
+Antes de extraer datos, la app debe guardar todo artefacto original. Esta capa permite trazabilidad, auditor├¡a, 
+reprocesamiento y explicaci├│n posterior de cada movimiento. 
+FinanzasLocal/ 
+Ôö£ÔöÇÔöÇ app.db 
+Ôö£ÔöÇÔöÇ staging.db 
+Ôö£ÔöÇÔöÇ logs.db 
+Ôö£ÔöÇÔöÇ config/ 
+Ôöé   Ôö£ÔöÇÔöÇ accounts.yaml 
+Ôöé   Ôö£ÔöÇÔöÇ categories.yaml 
+Ôöé   Ôö£ÔöÇÔöÇ payee_rules.yaml 
+Ôöé   ÔööÔöÇÔöÇ connectors.yaml 
+Ôö£ÔöÇÔöÇ raw/ 
+Ôöé   Ôö£ÔöÇÔöÇ email/ 
+Ôöé   Ôö£ÔöÇÔöÇ mercado_pago/ 
+Ôöé   Ôö£ÔöÇÔöÇ csv/ 
+Ôöé   Ôö£ÔöÇÔöÇ ofx/ 
+Ôöé   Ôö£ÔöÇÔöÇ qif/ 
+Ôöé   Ôö£ÔöÇÔöÇ pdf/ 
+Ôöé   Ôö£ÔöÇÔöÇ images/ 
+Ôöé   ÔööÔöÇÔöÇ manual/ 
+Ôö£ÔöÇÔöÇ parsed/ 
+Ôö£ÔöÇÔöÇ exports/ 
+Ôöé   Ôö£ÔöÇÔöÇ mmex_csv/ 
+Ôöé   Ôö£ÔöÇÔöÇ mmex_qif/ 
+Ôöé   ÔööÔöÇÔöÇ audit_reports/ 
+Ôö£ÔöÇÔöÇ backups/ 
+ÔööÔöÇÔöÇ workers/ 
+ 
+Campo de evidencia Prop├│sito 
+artifact_id Identificador ├║nico del artefacto. 
+source_type email, api, csv, pdf, image, manual. 
+sha256 Evita reprocesar archivos id├®nticos y permite auditor├¡a. 
+storage_path Ruta local del archivo original. 
+parser_status pending, parsed, error, needs_review. 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+parser_version Permite saber con qu├® versi├│n se extrajo el dato. 
+metadata_json Datos de correo, API, p├ígina PDF, fila CSV u otros metadatos. 
+ 
+9. Modelo de datos local 
+La base local no debe copiar MMEX uno a uno. Debe ser m├ís rica, porque tiene que conservar evidencia cruda, m├║ltiples 
+fuentes, confianza, hashes, estado de revisi├│n y trazabilidad. 
+9.1. Tabla source_artifact 
+CREATE TABLE source_artifact ( 
+    artifact_id TEXT PRIMARY KEY, 
+    source_type TEXT NOT NULL, 
+    source_name TEXT NOT NULL, 
+    original_name TEXT, 
+    storage_path TEXT NOT NULL, 
+    sha256 TEXT NOT NULL UNIQUE, 
+    content_type TEXT, 
+    received_at TEXT, 
+    imported_at TEXT DEFAULT CURRENT_TIMESTAMP, 
+    parser_status TEXT DEFAULT 'pending', 
+    parser_error TEXT, 
+    metadata_json TEXT 
+); 
+ 
+9.2. Tabla parsed_event 
+CREATE TABLE parsed_event ( 
+    parsed_event_id TEXT PRIMARY KEY, 
+    artifact_id TEXT NOT NULL, 
+    parser_name TEXT NOT NULL, 
+    parser_version TEXT NOT NULL, 
+    raw_text TEXT, 
+    extracted_json TEXT NOT NULL, 
+    confidence REAL DEFAULT 0, 
+    status TEXT DEFAULT 'parsed', 
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP, 
+    FOREIGN KEY (artifact_id) REFERENCES source_artifact(artifact_id) 
+); 
+ 
+9.3. Tabla canonical_tx 
+CREATE TABLE canonical_tx ( 
+    tx_uid TEXT PRIMARY KEY, 
+    owner TEXT NOT NULL,              -- ricardo | laura | joint 
+    source_type TEXT NOT NULL,        -- email | api | csv | ofx | qif | pdf | image | manual 
+    source_name TEXT NOT NULL,        -- gmail | mercado_pago | banco_estado | falabella | mach | bci 
+ 
+    event_date TEXT, 
+    booking_date TEXT, 
+    posted_date TEXT, 
+ 
+    amount REAL NOT NULL, 
+    currency TEXT NOT NULL DEFAULT 'CLP', 
+    direction TEXT NOT NULL,          -- debit | credit 
+ 
+    account_alias TEXT, 
+    account_number_masked TEXT, 
+    card_last4 TEXT, 
+ 
+    merchant_raw TEXT, 
+    merchant_norm TEXT, 
+ 
+    tx_type TEXT NOT NULL,            -- purchase | bill_payment | transfer_in | transfer_out | internal_transfer | 
+refund | fee | rejected_payment 
+ 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+    reference_raw TEXT, 
+    reference_norm TEXT, 
+ 
+    category_guess TEXT, 
+    subcategory_guess TEXT, 
+    payee_guess TEXT, 
+ 
+    tags_json TEXT, 
+    raw_text TEXT, 
+    evidence_json TEXT, 
+ 
+    hash_artifact TEXT, 
+    hash_business_strong TEXT, 
+    hash_business_medium TEXT, 
+    fitid_synthetic TEXT, 
+ 
+    confidence REAL DEFAULT 0, 
+    reconcile_status TEXT DEFAULT 'new', 
+ 
+    mmex_account_id INTEGER, 
+    mmex_tx_id INTEGER, 
+ 
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP, 
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP 
+); 
+ 
+9.4. Tablas complementarias 
+Tabla Uso 
+tx_evidence Relaciona cada transacci├│n con correos, PDFs, filas CSV, JSON API u OCR. 
+payee_rule Reglas locales para normalizar comercios y categor├¡as. 
+account_alias Mapea tarjetas/cuentas reales a cuentas de MMEX. 
+import_batch Registra cada corrida de ingesta, validaci├│n y exportaci├│n. 
+review_task Cola de casos dudosos o errores que requieren decisi├│n humana. 
+subscription_candidate Agrupa pagos recurrentes detectados. 
+export_log Audita qu├® movimientos se exportaron, cu├índo y hacia qu├® archivo. 
+ 
+10. Normalizaci├│n, categorizaci├│n y reglas 
+La normalizaci├│n transforma datos ca├│ticos de bancos y correos en registros homog├®neos. Debe operar antes de cualquier 
+deduplicaci├│n y antes de cualquier exportaci├│n a MMEX. 
+10.1. Fechas 
+Campo Uso 
+event_date Fecha real del evento, por ejemplo la compra. 
+booking_date Fecha en que el banco contabiliza el movimiento. 
+posted_date Fecha que se exportar├í a MMEX. 
+ 
+Regla 
+Todas las fechas deben convertirse internamente a ISO YYYY-MM-DD. Nunca exportar fechas ambiguas al libro final. 
+ 
+10.2. Montos 
+ÔÇó Guardar amount como valor absoluto. 
+ÔÇó Guardar direction como debit o credit. 
+ÔÇó Guardar currency como CLP, USD u otra moneda. 
+ÔÇó Eliminar s├¡mbolos monetarios, separadores regionales y texto residual. 
+ÔÇó Aplicar signo solo al exportar, no dentro del modelo can├│nico. 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+10.3. Comercios y beneficiarios 
+Entrada cruda: 
+PAYPAL *UBER EATS SANTIAGO 
+UBER* TRIP 
+UBER EATS CL 
+ 
+Salida normalizada: 
+Payee: Uber Eats 
+Categoria: Alimentacion 
+Subcategoria: Delivery 
+Tags: delivery, comida 
+ 
+10.4. Estrategia de reglas 
+Nivel Mecanismo Ejemplo 
+1 Regla exacta merchant_raw == "NETFLIX". 
+2 Contains merchant_raw contiene "UBER EATS". 
+3 Regex Patrones bancarios o referencias variables. 
+4 Fuzzy matching Variantes de comercio con similitud alta. 
+5 Historial humano Aprende de correcciones previas. 
+6 LLM local opcional Solo para plantillas ambiguas o nuevas. 
+7 Revisi├│n manual Cuando la confianza no alcanza umbral. 
+ 
+- name: Uber Eats 
+  priority: 10 
+  match: 
+    contains: 
+      - "UBER EATS" 
+      - "PAYPAL *UBER" 
+  output: 
+    payee: "Uber Eats" 
+    category: "Alimentacion" 
+    subcategory: "Delivery" 
+    tags: 
+      - "delivery" 
+ 
+11. Dedupe y conciliaci├│n 
+La deduplicaci├│n es el componente cr├¡tico. El sistema debe permitir reprocesar correos, cartolas y PDFs sin duplicar gastos 
+en MMEX. 
+11.1. Niveles de deduplicaci├│n 
+Nivel T├®cnica Uso 
+1 Hash exacto del artefacto Evita reprocesar el mismo correo, PDF, CSV o JSON API. 
+2 FITID sint├®tico fuerte Fecha + monto + moneda + cuenta/tarjeta + referencia. 
+3 FITID sint├®tico medio Fecha bucket + monto + moneda + tarjeta + comercio normalizado. 
+4 Matching difuso Merchant/memo similar, monto igual, misma tarjeta, ventana de 1 a 3 d├¡as. 
+5 Sliding window amplio Correo de autorizaci├│n versus cargo liquidado hasta 14 d├¡as despu├®s. 
+ 
+FITID fuerte: 
+sha256(owner + amount + currency + normalized_reference + account_or_card + date_bucket) 
+ 
+FITID medio: 
+sha256(owner + amount + currency + merchant_norm + card_last4 + date_bucket) 
+ 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+11.2. Precedencia entre fuentes 
+Dato Fuente que manda 
+Monto final Banco/API/estado de cuenta. 
+Fecha contable Banco/API/estado de cuenta. 
+Comercio legible Correo, si describe mejor el comercio. 
+Referencia bancaria Banco/API. 
+Categor├¡a Reglas locales + revisi├│n humana. 
+OCR Solo rellena huecos; no derrota fuentes estructuradas. 
+ 
+Regla de seguridad 
+Si dos fuentes discrepan en monto o direcci├│n, no se fusionan autom├íticamente. Van a revisi├│n. 
+ 
+11.3. Conciliaci├│n de casos cr├¡ticos 
+Caso Tratamiento correcto 
+Compra con tarjeta Correo + estado de cuenta se fusionan en una sola canonical_tx con evidencia m├║ltiple. 
+Pago de tarjeta Si la tarjeta existe en MMEX, registrar como transferencia interna, no como gasto. 
+Transferencia Ricardo Ôåö Laura Si ambas cuentas est├ín modeladas, fusionar salida y entrada como internal_transfer. 
+Pago rechazado Registrar como evento de alerta; no afecta balance. 
+Reembolso Crear transacci├│n separada asociable, no sobrescribir compra original. 
+Suscripci├│n Detectar recurrencia por comercio, monto similar, periodicidad y cuenta. 
+ 
+12. Integraci├│n con Money Manager Ex 
+La integraci├│n debe ser progresiva. Primero, exportar archivos que MMEX ya sabe importar. Despu├®s, cuando el flujo est├® 
+probado, evaluar escritura directa sobre SQLite. 
+12.1. Fase 1: CSV importable 
+ÔÇó Generar un CSV por cuenta y por lote. 
+ÔÇó Usar el Universal CSV Importer de MMEX. 
+ÔÇó Mantener el hash FITID sint├®tico en Notes o campo equivalente durante MVP. 
+ÔÇó Marcar movimientos dudosos como Followup o dejarlos fuera hasta revisi├│n. 
+ÔÇó No tocar directamente el archivo .mmb en esta etapa. 
+Date,Payee,Amount,Transaction Type,Category,Subcategory,Notes,Number,Status 
+2026-05-02,Uber Eats,12990,Withdrawal,Alimentacion,Delivery,"Gmail+CSV hash:abc123",,Followup 
+ 
+12.2. Fase 2: QIF/OFX generado 
+ÔÇó Generar QIF como formato puente si MMEX importa con menor fricci├│n que CSV. 
+ÔÇó Evaluar OFX si se desea mayor sem├íntica financiera. 
+ÔÇó Mantener FITID sint├®tico para evitar duplicados entre lotes. 
+12.3. Fase 3: SQLite directo 
+ÔÇó Cerrar MMEX antes de escribir. 
+ÔÇó Crear backup autom├ítico del .mmb/.emb o copia de trabajo. 
+ÔÇó Validar esquema con PRAGMA table_info. 
+ÔÇó Insertar dentro de BEGIN/COMMIT/ROLLBACK. 
+ÔÇó Gestionar PAYEE_V1, CATEGORY_V1, CHECKINGACCOUNT_V1, TAG_V1, TAGLINK_V1 y CUSTOMFIELDDATA_V1. 
+ÔÇó Verificar que no existan duplicados por FITID sint├®tico antes de insertar. 
+ÔÇó Registrar mmex_tx_id de vuelta en canonical_tx. 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+12.4. Custom Fields recomendados en MMEX 
+Campo MMEX Contenido 
+source_type email, csv, pdf, api, manual. 
+source_name gmail, mercado_pago, cmr, banco_estado, mach, bci. 
+fitid_synthetic Hash ├║nico de negocio para deduplicaci├│n. 
+source_ref Referencia bancaria o ID API. 
+card_last4 ├Ültimos cuatro d├¡gitos de tarjeta. 
+owner Ricardo, Laura o conjunto. 
+parser_version Versi├│n del parser que gener├│ la transacci├│n. 
+artifact_hash Hash SHA-256 de la evidencia original. 
+ 
+13. Seguridad, privacidad y backups 
+Elemento Pol├¡tica recomendada 
+Tokens OAuth Guardar cifrados mediante DPAPI o Credential Manager. 
+Contrase├▒as bancarias No guardarlas. La app no debe almacenar credenciales bancarias. 
+Password .emb No guardar por defecto; pedir al usuario cuando sea necesario. 
+Logs Nunca registrar RUT completo, tarjeta completa, tokens, passwords o PDF completo. 
+Backups Crear antes de exportar, antes de escribir en MMEX y diariamente. 
+Permisos Principio de m├¡nimo privilegio: solo carpetas configuradas. 
+IA Solo local si procesa datos bancarios. No enviar PDFs/correos a modelos cloud. 
+ 
+13.1. Backups sugeridos 
+backups/mmex/mmex_2026-05-02_1530_pre_export.mmb 
+backups/staging/staging_2026-05-02_1530.db 
+backups/config/config_2026-05-02_1530.zip 
+backups/reports/export_audit_2026-05-02_1530.json 
+ 
+14. Dashboard financiero 
+La app debe entregar inteligencia operativa antes de MMEX. El dashboard debe permitir ver problemas y tendencias sin 
+abrir directamente el libro contable. 
+Panel Contenido 
+Resumen mensual Ingresos, egresos, saldo neto y gasto promedio diario. 
+Categor├¡as Gasto por categor├¡a, subcategor├¡a y variaci├│n mensual. 
+Suscripciones Pagos recurrentes detectados, monto esperado y pr├│xima fecha. 
+Pagos rechazados Alertas que no afectan balance, pero requieren acci├│n. 
+Cuentas por pagar Deudas, cuotas, vencimientos y tarjetas. 
+Pendientes de revisi├│n Movimientos con baja confianza o conflicto de conciliaci├│n. 
+Exportaci├│n MMEX ├Ültimos lotes exportados, estado y errores. 
+Calidad de datos Duplicados evitados, parsers fallidos y fuentes sin actualizar. 
+ 
+15. Scheduler y automatizaci├│n local 
+Job Frecuencia sugerida Observaci├│n 
+Sincronizar Gmail Cada 15-30 minutos Solo descarga metadata y correos nuevos. 
+Leer carpeta de entrada Cada 5 minutos Detecta nuevos CSV, PDF, OFX, QIF e im├ígenes. 
+Procesar PDFs pendientes Manual o nocturno OCR puede ser costoso. 
+Sincronizar Mercado Pago Cada 1-3 horas Respetar l├¡mites de API. 
+Detectar suscripciones Diario Analizar recurrencia por comercio/monto. 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+Crear backup Diario y antes de exportar Backup inmutable con timestamp. 
+Exportar MMEX Manual en MVP El usuario aprueba antes de exportar. 
+Limpieza de logs Semanal Mantener auditor├¡a sin exceso de datos sensibles. 
+ 
+Regla de concurrencia 
+Solo un job puede escribir en staging.db al mismo tiempo. Solo un job puede exportar o escribir hacia MMEX al mismo tiempo. 
+ 
+16. Estructura del proyecto 
+FinanzasLocal.sln 
+Ôö£ÔöÇÔöÇ FinanzasLocal.Desktop 
+Ôöé   Ôö£ÔöÇÔöÇ Views/ 
+Ôöé   Ôö£ÔöÇÔöÇ ViewModels/ 
+Ôöé   ÔööÔöÇÔöÇ App.axaml / App.xaml 
+Ôö£ÔöÇÔöÇ FinanzasLocal.Core 
+Ôöé   Ôö£ÔöÇÔöÇ Entities/ 
+Ôöé   Ôö£ÔöÇÔöÇ ValueObjects/ 
+Ôöé   Ôö£ÔöÇÔöÇ Services/ 
+Ôöé   Ôö£ÔöÇÔöÇ Rules/ 
+Ôöé   ÔööÔöÇÔöÇ Interfaces/ 
+Ôö£ÔöÇÔöÇ FinanzasLocal.Infrastructure 
+Ôöé   Ôö£ÔöÇÔöÇ SQLite/ 
+Ôöé   Ôö£ÔöÇÔöÇ Repositories/ 
+Ôöé   Ôö£ÔöÇÔöÇ Migrations/ 
+Ôöé   Ôö£ÔöÇÔöÇ Security/ 
+Ôöé   ÔööÔöÇÔöÇ FileStorage/ 
+Ôö£ÔöÇÔöÇ FinanzasLocal.Connectors 
+Ôöé   Ôö£ÔöÇÔöÇ Gmail/ 
+Ôöé   Ôö£ÔöÇÔöÇ MercadoPago/ 
+Ôöé   Ôö£ÔöÇÔöÇ FileDrop/ 
+Ôöé   ÔööÔöÇÔöÇ ManualEntry/ 
+Ôö£ÔöÇÔöÇ FinanzasLocal.MMEX 
+Ôöé   Ôö£ÔöÇÔöÇ CsvExporter/ 
+Ôöé   Ôö£ÔöÇÔöÇ QifExporter/ 
+Ôöé   Ôö£ÔöÇÔöÇ SqliteWriter/ 
+Ôöé   ÔööÔöÇÔöÇ SchemaInspector/ 
+Ôö£ÔöÇÔöÇ FinanzasLocal.WorkerHost 
+Ôöé   Ôö£ÔöÇÔöÇ JobRunner/ 
+Ôöé   Ôö£ÔöÇÔöÇ Scheduler/ 
+Ôöé   ÔööÔöÇÔöÇ PythonBridge/ 
+ÔööÔöÇÔöÇ FinanzasLocal.Tests 
+    Ôö£ÔöÇÔöÇ Unit/ 
+    Ôö£ÔöÇÔöÇ Integration/ 
+    ÔööÔöÇÔöÇ GoldenFiles/ 
+ 
+16.1. Workers Python 
+workers/python/finetl/ 
+Ôö£ÔöÇÔöÇ adapters/ 
+Ôöé   Ôö£ÔöÇÔöÇ email_gmail.py 
+Ôöé   Ôö£ÔöÇÔöÇ csv_bancoestado.py 
+Ôöé   Ôö£ÔöÇÔöÇ csv_falabella.py 
+Ôöé   Ôö£ÔöÇÔöÇ pdf_cmr.py 
+Ôöé   Ôö£ÔöÇÔöÇ mercado_pago.py 
+Ôöé   ÔööÔöÇÔöÇ manual.py 
+Ôö£ÔöÇÔöÇ extractors/ 
+Ôöé   Ôö£ÔöÇÔöÇ html_text.py 
+Ôöé   Ôö£ÔöÇÔöÇ regex_bank.py 
+Ôöé   Ôö£ÔöÇÔöÇ pdf_native.py 
+Ôöé   Ôö£ÔöÇÔöÇ ocr_image.py 
+Ôöé   ÔööÔöÇÔöÇ llm_local.py 
+Ôö£ÔöÇÔöÇ normalizers/ 
+Ôöé   Ôö£ÔöÇÔöÇ dates.py 
+Ôöé   Ôö£ÔöÇÔöÇ amounts.py 
+Ôöé   Ôö£ÔöÇÔöÇ merchants.py 
+Ôöé   ÔööÔöÇÔöÇ accounts.py 
+Ôö£ÔöÇÔöÇ output/ 
+Ôöé   ÔööÔöÇÔöÇ candidate_json.py 
+ÔööÔöÇÔöÇ tests/ 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+    ÔööÔöÇÔöÇ fixtures/ 
+ 
+17. Contratos JSON entre C# y Python 
+Para reducir locks y complejidad, Python no debe escribir inicialmente en SQLite. Python recibe un artefacto, lo procesa y 
+devuelve JSON; C# valida y persiste. 
+{ 
+  "parser_name": "gmail_banco_falabella", 
+  "parser_version": "1.0.0", 
+  "source_type": "email", 
+  "source_name": "banco_falabella", 
+  "artifact_sha256": "abc123", 
+  "candidates": [ 
+    { 
+      "event_date": "2026-05-02", 
+      "amount": 12990, 
+      "currency": "CLP", 
+      "direction": "debit", 
+      "merchant_raw": "UBER EATS SANTIAGO", 
+      "merchant_norm": "Uber Eats", 
+      "card_last4": "1234", 
+      "tx_type": "purchase", 
+      "reference_raw": null, 
+      "confidence": 0.92, 
+      "evidence_excerpt": "Compra realizada por $12.990..." 
+    } 
+  ] 
+} 
+ 
+18. Validaciones obligatorias 
+Nivel Validaciones 
+Transacci├│n Fecha v├ílida, monto > 0, moneda v├ílida, direcci├│n v├ílida, fuente identificada, cuenta mapeada o revisi├│n, 
+hash generado. 
+Lote Conteo de artefactos, conteo de candidatos, duplicados detectados, errores, tasa de confianza, balance si 
+existe saldo inicial/final. 
+Estado de cuenta saldo_final = saldo_inicial + ingresos - egresos. Si no cuadra, el lote va a revisi├│n. 
+Antes de exportar Sin duplicados aprobados, sin cuentas desconocidas, sin fechas inv├ílidas, backup creado, categor├¡as v├ílidas. 
+Antes de SQLite directo MMEX cerrado, backup creado, esquema validado, transacci├│n ACID activa, rollback disponible. 
+ 
+19. Roadmap de desarrollo 
+Fase Duraci├│n sugerida Entregables 
+0. Descubrimiento 1 semana Inventario de cuentas MMEX, bancos, fuentes, categor├¡as, ejemplos reales 
+anonimizados y dise├▒o final de staging. 
+1. N├║cleo local 1-2 semanas App m├¡nima, SQLite, tablas base, logs, backups y carga manual. 
+2. Gmail 2 semanas OAuth, descarga de correos, guardado local, parser HTML/texto y candidatos. 
+3. Archivos CSV/PDF 2-3 semanas Watch folder, adaptadores CSV, PDF nativo, OCR y cola de revisi├│n. 
+4. Dedupe/conciliaci├│n 2 semanas Hashes, fuzzy matching, sliding window, transferencias internas y merge multi-
+fuente. 
+5. Exportaci├│n MMEX 1-2 semanas CSV/QIF por cuenta, reporte de exportaci├│n y estados exported/imported. 
+6. Dashboard 2 semanas Gastos, ingresos, suscripciones, pagos rechazados, cuentas por pagar y calidad de 
+datos. 
+7. Mercado Pago API 1-2 semanas OAuth, movimientos, pagos, reembolsos, comisiones y conciliaci├│n. 
+8. Browser asistido 2-3 semanas Asistente visible para descargar cartolas, sin evasi├│n de controles. 
+9. SQLite directo MMEX 3-4 semanas Schema inspector, writer ACID, custom fields, tags, rollback y auditor├¡a. 
+ 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+20. Estrategia de pruebas 
+ÔÇó Crear golden files con correos, CSV, PDFs y JSON API reales anonimizados. 
+ÔÇó Probar parseo de fechas, montos CLP, comercios, direcci├│n y cuentas. 
+ÔÇó Probar deduplicaci├│n correo + CSV, correo + PDF y API + correo. 
+ÔÇó Probar transferencias internas y pagos de tarjeta para evitar doble gasto. 
+ÔÇó Probar pagos rechazados para asegurar que no afecten el balance. 
+ÔÇó Probar exportaci├│n CSV importable en MMEX. 
+ÔÇó Probar reimportaci├│n del mismo lote sin duplicados. 
+ÔÇó Probar backups y rollback. 
+tests/fixtures/ 
+Ôö£ÔöÇÔöÇ gmail_bancoestado_compra.eml 
+Ôö£ÔöÇÔöÇ gmail_falabella_rechazo.eml 
+Ôö£ÔöÇÔöÇ mercadopago_payment.json 
+Ôö£ÔöÇÔöÇ cmr_estado_cuenta.pdf 
+Ôö£ÔöÇÔöÇ bancoestado_movimientos.csv 
+Ôö£ÔöÇÔöÇ mach_notificacion.eml 
+ÔööÔöÇÔöÇ expected_canonical_tx.json 
+ 
+21. Riesgos y mitigaciones 
+Riesgo Impacto Mitigaci├│n 
+Cambio de plantilla de correo Parser deja de extraer datos. Fallback con LLM local, reglas versionadas y cola de revisi├│n. 
+Duplicados multi-fuente Balances inflados. FITID sint├®tico, fuzzy matching y revisi├│n conservadora. 
+PDF mal extra├¡do Movimientos incompletos o 
+incorrectos. 
+Validaci├│n de balance, OCR solo como respaldo y revisi├│n humana. 
+MMEX bloqueado Fallo de exportaci├│n o escritura. CSV en MVP; locks y chequeo de proceso en fase SQLite. 
+Corrupci├│n .mmb P├®rdida de libro contable. Backups autom├íticos, copia de trabajo, transacciones ACID y rollback. 
+Token OAuth filtrado Acceso indebido al correo/API. DPAPI/Credential Manager, scopes m├¡nimos y rotaci├│n. 
+Sincronizaci├│n familiar conflictiva database is locked o versiones 
+divergentes. 
+Un solo PC fuente de verdad al inicio; Syncthing solo cuando estable. 
+Scraping bancario inestable Bloqueos y fallas frecuentes. No usar como base; preferir archivos y browser asistido visible. 
+ 
+22. Criterios de ├®xito del MVP 
+1. Lee correos financieros desde Gmail. 
+2. Permite cargar CSV/PDF manualmente. 
+3. Guarda evidencia cruda con hash. 
+4. Normaliza fecha, monto, cuenta, comercio y tipo. 
+5. Deduplica correo + estado de cuenta. 
+6. Detecta pagos rechazados sin afectar balance. 
+7. Detecta posibles suscripciones. 
+8. Permite revisi├│n humana de casos dudosos. 
+9. Exporta CSV compatible con MMEX. 
+10. Crea backups autom├íticos. 
+11. Permite reprocesar lotes sin duplicar. 
+12. No escribe directamente al .mmb en la primera versi├│n. 
+23. Ap├®ndices t├®cnicos 
+23.1. Estados de una transacci├│n 
+raw 
+ ÔööÔöÇÔöÇ parsed 
+
+Plan de arquitectura - App desktop financiera local para MMEX 
+      ÔööÔöÇÔöÇ normalized 
+           Ôö£ÔöÇÔöÇ duplicate_candidate 
+           Ôö£ÔöÇÔöÇ needs_review 
+           ÔööÔöÇÔöÇ approved 
+                 ÔööÔöÇÔöÇ exported 
+                      ÔööÔöÇÔöÇ imported 
+ 
+Estado Significado 
+raw Artefacto recibido, no procesado. 
+parsed Campos preliminares extra├¡dos. 
+normalized Fechas, montos, cuenta y comercio estandarizados. 
+duplicate_candidate Posible duplicado. 
+merged Fusionado con otra fuente. 
+needs_review Requiere decisi├│n humana. 
+approved Puede exportarse. 
+exported Fue enviado a CSV/QIF/MMEX writer. 
+imported Se confirm├│ en MMEX. 
+ignored No era transacci├│n ├║til. 
+error Fall├│ parsing o validaci├│n. 
+ 
+23.2. Lo que no se debe hacer en la primera versi├│n 
+No hacer Raz├│n 
+Escribir directo al .mmb desde el d├¡a uno Riesgo de corrupci├│n contable. 
+Depender solo de Gmail No todos los movimientos llegan por correo. 
+Automatizar bancos en modo invisible Inestable, riesgoso y propenso a bloqueo. 
+Guardar contrase├▒as bancarias Riesgo alto e innecesario. 
+Mezclar todo en Notes de MMEX Ensucia la contabilidad y dificulta auditor├¡a. 
+No guardar evidencia Impide explicar de d├│nde sali├│ cada movimiento. 
+No tener revisi├│n humana Los bancos cambian formatos y los parsers fallan. 
+Usar IA en nube con PDFs bancarios Contradice privacidad y soberan├¡a local. 
+ 
+23.3. Arquitectura final recomendada 
+S├¡ntesis final 
+Una app desktop local en .NET, con SQLite como staging can├│nico, workers Python para extracci├│n/OCR/parsing, conectores 
+controlados para Gmail, Mercado Pago y archivos, motor de deduplicaci├│n con FITID sint├®tico, cola de revisi├│n humana y exportaci├│n 
+segura hacia MMEX por CSV/QIF primero, dejando la escritura directa al .mmb como fase avanzada. 
+ 
+23.4. Documentos base considerados 
+ÔÇó informe de claude.pdf 
+ÔÇó informe de gemini.pdf 
+ÔÇó informe de notebook lm.pdf 
+ÔÇó informe de opneai.pdf 

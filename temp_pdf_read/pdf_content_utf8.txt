@@ -1,0 +1,1957 @@
+﻿Warning: TT: undefined function: 21
+Warning: TT: undefined function: 21
+Warning: TT: invalid function id: 136
+Warning: TT: invalid function id: 136
+
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 1 de 54 
+FinanzasMMEX 
+Plan de Arquitectura ÔÇö App Desktop de Consolidaci├│n Financiera Local 
+Sincronizaci├│n offline-first de Gmail, scraping headful, Mercado Pago API y PDFs hacia finanza.mmb 
+(Money Manager Ex) 
+Autor: Ricardo  ÔÇó  Asistencia t├®cnica: Claude (Anthropic) 
+Versi├│n 1.0  ÔÇó  2 de mayo de 2026 
+S├¡ntesis de cuatro informes t├®cnicos (Claude, Gemini, NotebookLM, OpenAI) + skill spec-driven-workflow 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 2 de 54 
+Tabla de contenidos 
+La tabla se actualiza con clic-derecho ÔåÆ "Actualizar campos" en Word, o F9 en LibreOffice. 
+Tabla de contenidos ...................................................................................................................................... 2 
+0. Resumen ejecutivo .................................................................................................................................... 6 
+Decisi├│n arquitect├│nica central ............................................................................................................ 6 
+Estrategia de fuentes (chilena, mayo 2026) ......................................................................................... 6 
+Stack t├®cnico final ................................................................................................................................. 7 
+Roadmap de entrega ............................................................................................................................. 7 
+1. Especificaci├│n funcional (SPEC) ................................................................................................................. 9 
+1.1 Prop├│sito ............................................................................................................................................. 9 
+1.2 Contexto y personas ........................................................................................................................... 9 
+1.3 Requisitos funcionales ........................................................................................................................ 9 
+Ingesta ................................................................................................................................................... 9 
+Normalizaci├│n y categorizaci├│n .......................................................................................................... 10 
+Deduplicaci├│n...................................................................................................................................... 10 
+Conciliaci├│n ......................................................................................................................................... 10 
+Integraci├│n con MMEX ........................................................................................................................ 10 
+Multi-usuario y privacidad .................................................................................................................. 10 
+1.4 Requisitos no funcionales ................................................................................................................. 11 
+1.5 Inputs y outputs ................................................................................................................................ 11 
+Inputs .................................................................................................................................................. 11 
+Outputs ............................................................................................................................................... 12 
+1.6 Criterios de ├®xito ............................................................................................................................... 12 
+1.7 Fuera de alcance (versi├│n 1) ............................................................................................................. 12 
+1.8 Restricciones t├®cnicas ....................................................................................................................... 13 
+1.9 Marco legal chileno aplicable............................................................................................................ 13 
+2. Arquitectura del sistema ......................................................................................................................... 15 
+2.1 Visi├│n a 30,000 pies .......................................................................................................................... 15 
+2.2 Arquitectura de dos capas ................................................................................................................ 15 
+Por qu├® dos capas y no una ................................................................................................................ 15 
+2.3 Componentes y responsabilidades ................................................................................................... 16 
+Inventario de m├│dulos ........................................................................................................................ 16 
+Contrato de interfaz central: CanonicalTx .......................................................................................... 17 
+2.4 Modelo de datos can├│nico (staging.db) ........................................................................................... 18 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 3 de 54 
+Tabla principal: canonical_tx .............................................................................................................. 18 
+Tabla de soporte: raw_artifacts .......................................................................................................... 19 
+Tabla de reglas: category_rules .......................................................................................................... 19 
+Tabla de auditor├¡a: merge_log y reconcile_log ................................................................................... 20 
+2.5 Mapeo a tablas MMEX ...................................................................................................................... 20 
+2.6 Estrategia de fuentes (detalle por banco) ........................................................................................ 21 
+BancoEstado ........................................................................................................................................ 21 
+Banco Falabella / CMR ........................................................................................................................ 21 
+MachBCI .............................................................................................................................................. 22 
+Mercado Pago ..................................................................................................................................... 22 
+2.7 Pipelines de ingesti├│n ....................................................................................................................... 22 
+Pipeline Gmail ..................................................................................................................................... 22 
+Pipeline Mercado Pago API ................................................................................................................. 23 
+Pipeline Playwright headful (semi-asistido) ........................................................................................ 23 
+2.8 Motor ETL: normalizaci├│n + categorizaci├│n ...................................................................................... 23 
+Pipeline ETL ......................................................................................................................................... 23 
+Diccionario inicial de normalizaci├│n ................................................................................................... 24 
+LLM fallback (Ollama + Qwen3 8B) ..................................................................................................... 25 
+2.9 Estrategia de deduplicaci├│n .............................................................................................................. 25 
+C├│mo se calcula fitid_synthetic .......................................................................................................... 25 
+Sliding window para conciliaci├│n email Ôåö extracto .......................................................................... 26 
+Reglas de fusi├│n cuando hay match.................................................................................................... 26 
+Detecci├│n de transferencias internas ................................................................................................. 26 
+2.10 Conciliaci├│n matem├ítica ("Regla de Oro") ..................................................................................... 27 
+2.11 Estrategia multi-usuario .................................................................................................................. 27 
+Cuentas separadas (no datos separados) ........................................................................................... 27 
+2.12 Gastos compartidos: Tags ............................................................................................................... 28 
+2.13 Estructura de archivos del proyecto ............................................................................................... 28 
+2.14 Concurrencia: el problema de MMEX abierto ................................................................................ 29 
+3. Decisiones t├®cnicas (con justificaci├│n) .................................................................................................... 30 
+3.1 Python local + SQLite directo (vs CSV en MVP)................................................................................. 30 
+3.2 OAuth Gmail API en lugar de IMAP ................................................................................................... 30 
+3.3 Ollama/Qwen3 8B como fallback sem├íntico .................................................................................... 30 
+3.4 Playwright headful para BancoEstado y Falabella ............................................................................ 30 
+3.5 Mercado Pago v├¡a OAuth .................................................................................................................. 31 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 4 de 54 
+3.6 MachBCI: solo email + manual .......................................................................................................... 31 
+3.7 FITID sint├®tico en CUSTOMFIELDDATA_V1 (no en NOTES)............................................................... 31 
+3.8 Tags vs Categor├¡as para gastos conjuntos ......................................................................................... 31 
+3.9 Backups: c├│mo y cu├índo ................................................................................................................... 31 
+3.10 Cifrado: .mmb vs .emb vs contenedor BitLocker ............................................................................ 32 
+3.11 Refactoring del proyecto previo gmail-to-MMEX ........................................................................... 32 
+4. Roadmap por fases ................................................................................................................................. 33 
+Fase 0 ÔÇö Setup (1ÔÇô2 d├¡as) ....................................................................................................................... 33 
+Fase 1 ÔÇö MVP (3ÔÇô5 d├¡as) ........................................................................................................................ 33 
+Fase 2 ÔÇö Writer SQLite directo (3ÔÇô4 d├¡as) .............................................................................................. 34 
+Fase 3 ÔÇö Scraping headful (4ÔÇô6 d├¡as) ..................................................................................................... 35 
+Fase 4 ÔÇö Extras (3ÔÇô5 d├¡as) ...................................................................................................................... 35 
+Fase 5 ÔÇö Onboarding Laura (variable).................................................................................................... 35 
+5. Plan de pruebas....................................................................................................................................... 37 
+5.1 Estrategia general ............................................................................................................................. 37 
+5.2 Tests unitarios ................................................................................................................................... 37 
+5.3 Tests de integraci├│n .......................................................................................................................... 37 
+5.4 Tests manuales (smoke tests) ........................................................................................................... 37 
+5.5 Tests de seguridad ............................................................................................................................ 37 
+6. Operaci├│n y mantenimiento ................................................................................................................... 39 
+6.1 Logging .............................................................................................................................................. 39 
+6.2 Cu├índo intervenir manualmente ...................................................................................................... 39 
+6.3 Procedimiento de restauraci├│n ........................................................................................................ 39 
+6.4 Mantenimiento del diccionario de categorizaci├│n ........................................................................... 39 
+7. Riesgos y mitigaciones ............................................................................................................................ 41 
+Ap├®ndice A ÔÇö Origen de cada decisi├│n por informe .................................................................................. 43 
+Decisiones donde el plan diverge de los informes ................................................................................. 44 
+Ap├®ndice B ÔÇö Esquema SQL completo de staging.db ................................................................................ 45 
+Ap├®ndice C ÔÇö Patrones regex iniciales (BancoEstado)............................................................................... 48 
+Compra con tarjeta de cr├®dito ............................................................................................................ 48 
+Transferencia recibida......................................................................................................................... 48 
+Transferencia enviada ......................................................................................................................... 48 
+Pago autom├ítico de servicio ............................................................................................................... 48 
+Retiro en cajero ................................................................................................................................... 48 
+Helper de normalizaci├│n de montos chilenos .................................................................................... 49 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 5 de 54 
+Ap├®ndice D ÔÇö Compliance chileno: detalle adicional ................................................................................ 50 
+D.1 Posici├│n legal de la operaci├│n .......................................................................................................... 50 
+D.2 Riesgo contractual con bancos ......................................................................................................... 50 
+D.3 Cronograma SFA (Sistema de Finanzas Abiertas) ............................................................................. 50 
+Ap├®ndice E ÔÇö Plantilla de acuerdo de mandato ........................................................................................ 52 
+ACUERDO DE MANDATO Y CONSENTIMIENTO INFORMADO PARA GESTI├ôN FINANCIERA FAMILIAR
+ ............................................................................................................................................................ 52 
+Cierre y siguientes pasos ............................................................................................................................. 54 
+Pr├│ximos pasos sugeridos ....................................................................................................................... 54 
+Contacto y mantenimiento del documento ............................................................................................ 54 
+ 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 6 de 54 
+0. Resumen ejecutivo 
+Este documento es el plan de arquitectura para FinanzasMMEX: una aplicaci├│n de escritorio Python que 
+consolida transacciones financieras de la familia (Ricardo + Laura) desde m├║ltiples fuentes chilenas hacia 
+un  ├║nico  archivo  Money  Manager  Ex  (finanza.mmb), operando  100%  en  la  PC  local  de  Ricardo,  sin 
+depender de servicios en la nube ni de agregadores comerciales como Fintoc o Floid. 
+El plan integra y reconcilia los hallazgos de cuatro informes t├®cnicos previos: el reporte  de  Claude  (con 
+investigaci├│n de campo sobre el estado real del web banking chileno y restricciones legales 2026), el de 
+Gemini (ETL cl├ísico con Pandas y custom fields), el de NotebookLM (LLM local + fuzzy matching + tags) y 
+el de OpenAI (modelo can├│nico de dos capas y formatos abiertos como OFX/MT940). Donde los informes 
+discrepan, este documento toma decisiones expl├¡citas y las justifica. 
+Decisi├│n arquitect├│nica central 
+La  aplicaci├│n  NO  escribe  directamente  sobre  finanza.mmb  desde  la  primera  versi├│n.  Adopta  una 
+arquitectura de dos capas: 
+ÔÇó Capa  de  staging ÔÇö una  base  SQLite  separada  (staging.db)  con  un  esquema  can├│nico  rico,  donde 
+aterrizan crudos todos los datos extra├¡dos. Aqu├¡ ocurre la normalizaci├│n, deduplicaci├│n, conciliaci├│n 
+matem├ítica y categorizaci├│n. 
+ÔÇó Capa de integraci├│n ÔÇö un componente que toma transacciones validadas en staging y las inyecta 
+en finanza.mmb. En la Fase 1 lo hace exportando OFX o CSV e importando v├¡a la UI de MMEX (delega 
+validaci├│n al motor maduro de MMEX). En la Fase 2 lo hace por SQL directo con transacciones ACID. 
+Esta separaci├│n es la decisi├│n m├ís importante del plan. Permite reimportar, revertir y auditar sin riesgo 
+de  corromper  el  archivo  MMEX,  mantiene  trazabilidad  completa  del  origen  de  cada  transacci├│n  y 
+desacopla la l├│gica de extracci├│n de los detalles del esquema MMEX. 
+Estrategia de fuentes (chilena, mayo 2026) 
+El siguiente cuadro resume la estrategia primaria y de contingencia por fuente. Refleja el estado real del 
+ecosistema chileno (no la teor├¡a general): 
+Fuente Pipeline primario Pipeline de contingencia Veredicto 
+BancoEstado Email Gmail (primaria) + scraping 
+Playwright headful (semanal) 
+OFX export + manual cuando 
+falle 
+Email + scraping 
+Banco Falabella / 
+CMR 
+Email Gmail (primaria) Scraping Playwright headful Email + scraping 
+MachBCI Email Gmail (cuando hay 
+notificaci├│n) 
+Export manual mensual desde 
+la app 
+Email + manual 
+Mercado Pago API oficial OAuth (primaria, 
+desatendida) 
+Email Gmail como respaldo API + email 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 7 de 54 
+Fuente Pipeline primario Pipeline de contingencia Veredicto 
+Tarjetas 
+presenciales sin 
+email 
+Entrada manual (PWA o quick-add) ÔÇö Manual 
+ 
+Stack t├®cnico final 
+ÔÇó Lenguaje: Python 3.12 (alineado con su entorno actual y con el proyecto previo de gmail-to-MMEX). 
+ÔÇó Persistencia local: SQLite (staging.db) y SQLite v├¡a MMEX (finanza.mmb). 
+ÔÇó Email: Google Gmail API con OAuth (refresh token persistido localmente). Se descarta IMAP por ser 
+m├ís fr├ígil con el 2FA actual de Google. 
+ÔÇó Scraping web: Playwright headful con storage_state. Solo BancoEstado y Falabella, ejecuci├│n semi-
+asistida (Ricardo presente al iniciar). 
+ÔÇó PDFs: pdfplumber    para    texto    nativo    +    Camelot    (lattice)    para    tablas    con    bordes    + 
+pytesseract+OCRmyPDF para escaneados. 
+ÔÇó Parsing  sem├íntico  de  emails: Regex  como  capa  primaria  (r├ípida,  determinista)  +  LLM  local 
+Ollama/Qwen3 8B como fallback cuando el regex falla. 
+ÔÇó Fuzzy  matching: RapidFuzz  para  normalizar  comercios  y  emparejar  transacciones  de  email  vs. 
+extracto. 
+ÔÇó API banca: Mercado Pago Developer App (Authorization Code OAuth) ÔÇö ├║nica API leg├¡tima del set. 
+ÔÇó Orquestaci├│n: Windows Task Scheduler con tareas separadas por fuente. 
+ÔÇó UI auxiliar: PySide6 (Qt) para una peque├▒a ventana de revisi├│n / quick-add manual; reusable de su 
+experiencia previa con PyQt6. 
+ÔÇó Tests: pytest + fixtures de emails reales anonimizados. 
+ÔÇó Logs  y  observabilidad: structlog ÔåÆ archivo rotatorio + opcional ingesta a Sentinel para auditor├¡a 
+posterior. 
+Roadmap de entrega 
+ÔÇó Fase 0 (1ÔÇô2 d├¡as): setup, esqueleto de proyecto, staging.db, OAuth Gmail y MP. 
+ÔÇó Fase 1 ÔÇö MVP (3ÔÇô5 d├¡as): ingesta Gmail + Mercado Pago API ÔåÆ staging.db ÔåÆ exportaci├│n OFX ÔåÆ 
+import manual a MMEX. 
+ÔÇó Fase 2 (3ÔÇô4 d├¡as): writer SQLite directo a finanza.mmb con transacciones ACID y custom fields. 
+ÔÇó Fase 3 (4ÔÇô6 d├¡as): scraping headful para BancoEstado y Falabella. 
+ÔÇó Fase 4 (3ÔÇô5 d├¡as): PDFs de contingencia + dashboard + reportes. 
+ÔÇó Fase 5 (variable): onboarding de Laura y gastos compartidos por tags. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 8 de 54 
+Recordatorio importante (legal Chile) 
+El proyecto se sostiene en el principio de "acceso con credenciales propias" seg├║n la Ley 21.459 (delitos 
+inform├íticos)  art.  2:  el  acceso  con  tus  propias  credenciales  y  consentimiento  expl├¡cito  de  Laura  no  es 
+"indebido".  El  riesgo  principal  NO  es  penal  sino  contractual  (T&C  de  BancoEstado  y  Falabella  proh├¡ben 
+acceso  automatizado).  La  mitigaci├│n  es:  scraping  semi-asistido,  no  desatendido,  con  cadencia  humana 
+razonable y sin alteraci├│n de datos. La Norma CMF de Sistema de Finanzas Abiertas (NCG en vigor desde 
+julio  2026)  abrir├í  un  canal  API  regulado  en  12ÔÇô24  meses;  arquitecturar  las  fuentes  como  pluggable 
+permitir├í migrar a SFA sin reescribir el sistema. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 9 de 54 
+1. Especificaci├│n funcional (SPEC) 
+Esta secci├│n es la "single source of truth" del proyecto, siguiendo el skill spec-driven-workflow. Cuando 
+algo en el c├│digo no coincida con la spec, se vuelve a este documento, no a parchear c├│digo. 
+1.1 Prop├│sito 
+Mantener  finanza.mmb  (Money  Manager  Ex  de  Ricardo  y  Laura)  actualizado  de  forma  confiable, 
+autom├ítica y privada, sin entregar credenciales bancarias a terceros, sin depender de servicios en la nube 
+de pago, y sin requerir entrada manual diaria de transacciones. 
+La meta funcional es: al final de cada d├¡a, finanza.mmb refleja todas las transacciones del d├¡a anterior con 
+categorizaci├│n  correcta,  sin  duplicados  y  con  saldos  cuadrados  contra  los  balances  reportados  por  los 
+bancos. 
+1.2 Contexto y personas 
+Actor Descripci├│n 
+Ricardo Usuario principal, t├®cnico (IT/seguridad). Ejecuta el sistema, hace mantenimiento, revisa 
+excepciones. Tiene cuentas en BancoEstado, Falabella/CMR, MachBCI y Mercado Pago. 
+Trabaja en Windows 11. 
+Laura Pareja de Ricardo. Usuaria pasiva del sistema; sus transacciones tambi├®n deben quedar 
+en finanza.mmb. Usa BancoEstado/Falabella propias. Ricardo tiene su consentimiento 
+expl├¡cito documentado para acceder con credenciales de ella. 
+Sistema Corre como tareas programadas en la PC de Ricardo. Solo escribe en finanza.mmb cuando 
+MMEX est├í cerrado. Si MMEX est├í abierto, escribe a staging.db y espera. 
+ 
+1.3 Requisitos funcionales 
+Ingesta 
+ÔÇó FR-1: El sistema debe leer correos de Gmail filtrados por el label "Bancos" y extraer transacciones 
+de BancoEstado, Falabella, MachBCI y Mercado Pago. 
+ÔÇó FR-2: El sistema debe consultar la API de Mercado Pago v├¡a OAuth y obtener movimientos de cuenta 
+usando /v1/account/settlement_report y /v1/payments/search. 
+ÔÇó FR-3: El sistema debe  permitir scraping web headful (con Ricardo presente al iniciar la sesi├│n)  de 
+BancoEstado y Falabella para obtener movimientos no presentes en email. 
+ÔÇó FR-4: El  sistema  debe  procesar  archivos  OFX,  QIF,  CSV  y PDF  dejados  por  Ricardo o  Laura  en  una 
+carpeta de "drop" local. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 10 de 54 
+ÔÇó FR-5: El sistema debe permitir entrada manual r├ípida de transacciones (compras presenciales sin 
+email/SMS). 
+Normalizaci├│n y categorizaci├│n 
+ÔÇó FR-6: Toda transacci├│n extra├¡da debe ser normalizada al esquema can├│nico de staging.db antes de 
+cualquier escritura a MMEX. 
+ÔÇó FR-7: El sistema debe normalizar el nombre del comercio (merchant_raw ÔåÆ merchant_norm) 
+usando un diccionario de reglas locales m├ís fuzzy matching (RapidFuzz). 
+ÔÇó FR-8: El   sistema   debe   asignar   PAYEEID   y   CATEGID   autom├íticamente   cuando   el   comercio 
+normalizado coincida con uno previamente categorizado en MMEX. 
+ÔÇó FR-9: Cuando el regex y el diccionario no logren parsear un email, el sistema debe invocar Ollama 
+(Qwen3 8B) localmente como fallback sem├íntico, con un prompt JSON-schema-strict. 
+Deduplicaci├│n 
+ÔÇó FR-10: El   sistema   debe   generar   un   hash   determinista   (SHA-256)   sobre   (fecha,   monto, 
+cuenta_o_tarjeta, merchant_norm) y usarlo como FITID  sint├®tico para evitar duplicados entre  las 
+fuentes email/scraping/OFX/manual. 
+ÔÇó FR-11: El sistema debe aplicar una sliding window de ┬▒14 d├¡as para emparejar la notificaci├│n r├ípida 
+de email (autorizaci├│n) con su liquidaci├│n posterior en el extracto. 
+ÔÇó FR-12: El hash sint├®tico debe persistirse en CUSTOMFIELDDATA_V1 de MMEX (campo personalizado 
+dedicado), no en el campo NOTES. 
+Conciliaci├│n 
+ÔÇó FR-13: Para  cada  extracto  bancario  procesado,  el  sistema  debe  verificar  matem├íticamente  que 
+B_final = B_inicial + ╬ú dep├│sitos ÔêÆ ╬ú retiros y marcar el lote como "reconciled" o "needs review". 
+ÔÇó FR-14: El  sistema  debe  identificar  transferencias  internas  entre  cuentas  familiares  modeladas  en 
+MMEX (retiro en cuenta A + dep├│sito por mismo monto en cuenta B dentro de 24h) y representarlas 
+como Transfer (TOACCOUNTID), no como ingreso + gasto separados. 
+Integraci├│n con MMEX 
+ÔÇó FR-15: El sistema debe respetar el archivo finanza.mmb: nunca escribir si MMEX est├í abierto (lock 
+detection).  En  lugar  de  fallar,  debe  diferir  la  escritura  a  la  pr├│xima  ventana  en  que  MMEX  est├® 
+cerrado. 
+ÔÇó FR-16: Toda  escritura  a  finanza.mmb  debe  estar  envuelta  en  BEGIN  IMMEDIATE  /  COMMIT  / 
+ROLLBACK con copia de respaldo previa. 
+ÔÇó FR-17: El  sistema  debe  poder  operar  en  modo  "export-only":  generar  OFX/CSV  en  una  carpeta y 
+dejar que Ricardo importe manualmente desde la UI de MMEX. 
+Multi-usuario y privacidad 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 11 de 54 
+ÔÇó FR-18: Cada  cuenta  y  tarjeta  debe  tener  su  propio  ACCOUNTID  en  MMEX  ("Mi  tarjeta",  "Tarjeta 
+Laura"). 
+ÔÇó FR-19: Los gastos compartidos deben usar TAG_V1 ("Conjunto") sin duplicar la transacci├│n. 
+ÔÇó FR-20: Los  datos  sensibles  (tokens  OAuth,  storage_state  de  Playwright,  contrase├▒as)  deben 
+almacenarse en Windows Credential Manager (v├¡a keyring), nunca en archivos de texto plano del 
+repo. 
+1.4 Requisitos no funcionales 
+ÔÇó NFR-1  (Privacidad): ning├║n  dato  transaccional,  credencial  ni  archivo  bancario  sale  de  la  PC  de 
+Ricardo. La ├║nica conexi├│n externa autorizada es Gmail API y Mercado Pago API. 
+ÔÇó NFR-2 (Seguridad): todo dato en reposo (staging.db, finanza.mmb, OFX intermedios) reside en una 
+carpeta  protegida  por  BitLocker  o  equivalente.  El  propio  finanza.mmb  se  mantiene  en  formato 
+.mmb durante la operaci├│n; la conversi├│n a .emb cifrado puede hacerse a discreci├│n del usuario. 
+ÔÇó NFR-3  (Confiabilidad): el  sistema  debe  ser  idempotente:  ejecutar  dos  veces  el  mismo  input  no 
+genera  duplicados.  La  p├®rdida  de  transacciones  es  peor  que  el  duplicado:  ante  duda,  marca  para 
+revisi├│n. 
+ÔÇó NFR-4 (Auditabilidad): cada transacci├│n en finanza.mmb debe poder ser trazada a un email_id, OFX 
+file, scraping run o entrada manual concreta v├¡a staging.db. 
+ÔÇó NFR-5  (Resiliencia): cambios  en  plantillas  de  correo  bancario  deben  degradar  gracefully  (log  + 
+fallback LLM), no perder transacciones silenciosamente. 
+ÔÇó NFR-6  (Latencia): la  ingesta  de  un  email  nuevo  debe  procesarse  en  menos  de  60s;  la  consulta  a 
+Mercado Pago, en menos de 30s. 
+ÔÇó NFR-7  (Reversibilidad): todo  estado  debe  ser  reproducible  desde  fuentes  originales  (Gmail  + 
+carpeta de drop + manual ledger). Si finanza.mmb se corrompe, se restaura desde backup y se re-
+ejecuta el pipeline. 
+ÔÇó NFR-8 (Mantenibilidad): c├│digo en Python idiom├ítico, 100% type-hinted, formateado con ruff, con 
+cobertura ÔëÑ 70% en m├│dulos de parsing y ETL. 
+1.5 Inputs y outputs 
+Inputs 
+ÔÇó Mensajes Gmail con label "Bancos" (lectura v├¡a API). 
+ÔÇó Llamadas autenticadas a Mercado Pago Developer API (OAuth refresh token persistido). 
+ÔÇó Sesiones Playwright headful contra portales bancarios (storage_state local). 
+ÔÇó Archivos en C:\Finanzas\drop\: OFX, QIF, CSV, PDF, XLSX exportados manualmente. 
+ÔÇó Entrada manual via UI Qt o CSV manual_entries.csv. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 12 de 54 
+Outputs 
+ÔÇó Inserciones   en   finanza.mmb   (CHECKINGACCOUNT_V1,   PAYEE_V1,   CATEGORY_V1,   TAG_V1, 
+TAGLINK_V1, CUSTOMFIELDDATA_V1). 
+ÔÇó Archivo  OFX  intermedio  (export  por  cuenta)  que  Ricardo  puede  importar  manualmente  como 
+contingencia. 
+ÔÇó Logs estructurados en C:\Finanzas\logs\. 
+ÔÇó Reporte HTML local de "transacciones para revisi├│n" generado al final de cada ejecuci├│n. 
+1.6 Criterios de ├®xito 
+ÔÇó SC-1: Dada una bandeja Gmail con 30 d├¡as de notificaciones BancoEstado, el pipeline extrae ÔëÑ 95% 
+de las transacciones reales sin duplicados, en Ôëñ 5 minutos. 
+ÔÇó SC-2: Dado  un  OFX  exportado  del  portal  de  BancoEstado  y  los  emails  de  los  mismos  30  d├¡as,  el 
+sistema fusiona ambos sin generar duplicados (deduplicaci├│n por FITID sint├®tico funciona). 
+ÔÇó SC-3: Una transferencia entre cuenta de Ricardo y cuenta de Laura aparece en MMEX como Transfer 
+├║nico, no como egreso+ingreso. 
+ÔÇó SC-4: Si  MMEX  est├í  abierto  al  momento  de  ejecutar  Task  Scheduler,  el  writer  detecta  el  lock  y 
+difiere; los datos quedan en staging.db y se aplican en la pr├│xima ventana. 
+ÔÇó SC-5: El balance final reportado por BancoEstado en su email/portal coincide al peso con la suma 
+de transacciones importadas. 
+ÔÇó SC-6: Tras ejecutar el pipeline  dos veces  consecutivas con los mismos inputs,  no se  crean nuevos 
+registros en finanza.mmb (idempotencia). 
+ÔÇó SC-7: Si  BancoEstado  cambia  su  plantilla  de  correo,  las  transacciones  del  d├¡a  siguen  entrando  v├¡a 
+LLM fallback y un alert HTML lo se├▒ala. 
+ÔÇó SC-8: Para una compra normalizada ("AMZN MKTP" ÔåÆ Amazon, Categor├¡a: Compras), la categor├¡a 
+se aplica correctamente en > 90% de los casos sin intervenci├│n humana. 
+ÔÇó SC-9: Tiempo de adopci├│n para Laura: < 1 hora (ella solo necesita confirmar su consentimiento por 
+escrito y no instalar nada en su PC). 
+1.7 Fuera de alcance (versi├│n 1) 
+ÔÇó Soporte para m├ís de un archivo finanza.mmb simult├íneo. 
+ÔÇó Investing/portfolio (acciones, fondos): MMEX lo soporta pero no se carga aqu├¡. 
+ÔÇó Sincronizaci├│n entre dispositivos (Syncthing, etc.): se trata como tarea futura, opcional. 
+ÔÇó App m├│vil propia. La PWA/quick-add se integra como sub-tarea de Fase 5, no es bloqueante. 
+ÔÇó Conciliaci├│n con tarjetas Visa/MasterCard "presenciales" sin email ni SMS ÔÇö entran como manual. 
+ÔÇó Ingesta de transacciones empresariales (Virtual IT Trust): es otro dominio, otro archivo MMEX si se 
+necesita. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 13 de 54 
+ÔÇó Soporte  para  .emb  cifrado  nativo:  la  operaci├│n  diaria  se  hace  sobre  .mmb  plano  dentro  de  un 
+contenedor   BitLocker.   Si   Ricardo   decide   migrar   a   .emb,   requiere   un   m├│dulo   extra   de 
+descifrado/recifrado al inicio/fin de cada ejecuci├│n. 
+1.8 Restricciones t├®cnicas 
+ÔÇó TC-1: Windows 11 + Python 3.12 64-bit como entorno productivo principal. 
+ÔÇó TC-2: Versi├│n   MMEX   objetivo:   1.9.2   (enero   2026),   schema   v21.   El   sistema   debe   leer 
+ACCOUNTLIST_V1,    CATEGORY_V1.PARENTID    (categor├¡as    anidadas    desde    1.7)    y    soportar 
+TAG_V1+TAGLINK_V1. 
+ÔÇó TC-3: Hardware base: laptop ASUS ExpertBook 16GB RAM. Ollama corre Qwen3 8B en CPU (latencia 
+aceptable de ~10s por prompt). 
+ÔÇó TC-4: Sin dependencia de servicios cloud salvo Gmail API y Mercado Pago API. Cero dependencias 
+hacia OpenAI, Anthropic o cualquier LLM remoto. 
+ÔÇó TC-5: El  sistema  debe  convivir  con  el  proyecto  previo  de  gmail-to-MMEX  si  existe;  no  rompe  esa 
+carpeta y se ofrece como reemplazo evolutivo. 
+1.9 Marco legal chileno aplicable 
+La operaci├│n se sostiene legalmente en tres normas vigentes en mayo 2026. Esta secci├│n es la base para 
+la respuesta a cualquier pregunta de compliance que Ricardo necesite documentar. 
+Norma Aplicaci├│n Implicancia para FinanzasMMEX 
+Ley 21.459 (Delitos 
+Inform├íticos) 
+Castiga el "acceso indebido a un 
+sistema inform├ítico" (art. 2) 
+El acceso con credenciales propias y 
+consentimiento expreso de Laura no es 
+"indebido". El riesgo penal es bajo. El riesgo real 
+es contractual: los T&C de BancoEstado y 
+Falabella proh├¡ben acceso automatizado, lo que 
+puede gatillar suspensi├│n de cuenta. Mitigaci├│n: 
+scraping semi-asistido con cadencia humana. 
+Ley 21.521 (Fintec) + 
+NCG SFA 
+El Sistema de Finanzas Abiertas 
+entra en vigor 4 julio 2026 con 
+implementaci├│n gradual 
+En 12ÔÇô24 meses surgir├í un canal API regulado 
+para acceso de datos por terceros con 
+consentimiento del usuario. Recomendaci├│n 
+arquitect├│nica: las fuentes deben ser pluggable. 
+Cuando SFA llegue a banca minorista, se 
+reemplaza el m├│dulo scraping_be.py por 
+sfa_be.py sin tocar el resto del sistema. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 14 de 54 
+Norma Aplicaci├│n Implicancia para FinanzasMMEX 
+Ley 21.719 (Datos 
+Personales) 
+Vigente desde diciembre 2026 
+ÔÇö el titular tiene derechos 
+sobre sus datos 
+Ricardo es titular de sus datos y de los de Laura 
+(con consentimiento expreso documentado). 
+Mantener todo local con cifrado en reposo 
+(BitLocker en la carpeta C:\Finanzas\) es la 
+pr├íctica correcta. Ning├║n tercero procesa los 
+datos. 
+ 
+Documento que conviene generar (one-shot) 
+Antes del  primer  scraping  de  cuenta de  Laura, Ricardo debe  firmar  con ella un  "Acuerdo  de  mandato y 
+consentimiento  informado"  que:  (a)  declare  que  Ricardo  accede  con  credenciales  que  ella  le  entrega 
+voluntariamente, (b) limite el alcance al portal bancario para fines de gesti├│n financiera familiar, (c) sea 
+revocable en cualquier momento por escrito. Una p├ígina, en espa├▒ol, archivada en PDF en la carpeta del 
+proyecto.  No  es  exigible  por  nadie  hoy,  pero  es  la  mejor  evidencia  documental  ante  cualquier  disputa 
+futura. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 15 de 54 
+2. Arquitectura del sistema 
+2.1 Visi├│n a 30,000 pies 
+FinanzasMMEX se modela como un pipeline de tres etapas (Extract ÔåÆ Transform ÔåÆ Load) con persistencia 
+intermedia en SQLite y dos colas: una de "transacciones  nuevas para insertar" y otra de "transacciones 
+que requieren revisi├│n humana". 
+El flujo conceptual es el siguiente (representado como ASCII para que sobreviva en cualquier visor): 
+          ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ Fuentes externas ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+          Ôöé                                                        Ôöé 
+  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+  Ôöé  Gmail API   Ôöé  Ôöé  Mercado Pago  Ôöé  Ôöé  Playwright  Ôöé  Ôöé  Drop folder Ôöé 
+  Ôöé   (OAuth)    Ôöé  Ôöé  API (OAuth)   Ôöé  Ôöé   headful    Ôöé  Ôöé OFX/CSV/PDF  Ôöé 
+  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ 
+         Ôöé                   Ôöé                 Ôöé                 Ôöé 
+         Ôû╝                   Ôû╝                 Ôû╝                 Ôû╝ 
+  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+  Ôöé  ADAPTERS (uno por fuente)  ÔåÆ  Esquema can├│nico CanonicalTx          Ôöé 
+  Ôöé  parsers/be_email.py ┬À parsers/cmr_email.py ┬À parsers/mp_api.py ...  Ôöé 
+  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ 
+                                       Ôû╝ 
+  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+  Ôöé  STAGING.DB (SQLite)                                                 Ôöé 
+  Ôöé  ÔöÇ canonical_tx ┬À raw_artifacts ┬À merge_log ┬À category_rules         Ôöé 
+  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ 
+                                       Ôû╝ 
+  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+  Ôöé  ETL ENGINE                                                          Ôöé 
+  Ôöé  normalize ÔåÆ categorize ÔåÆ fuzzy_merchant ÔåÆ hash_fitid ÔåÆ              Ôöé 
+  Ôöé  detect_internal_transfers ÔåÆ reconcile_balance                       Ôöé 
+  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ 
+                                       Ôû╝ 
+  ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+  Ôöé  MMEX WRITER                                                         Ôöé 
+  Ôöé  Fase 1: export OFX ÔåÆ import manual                                  Ôöé 
+  Ôöé  Fase 2: SQL directo con BEGIN/COMMIT/ROLLBACK                       Ôöé 
+  ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔö¼ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ 
+                                       Ôû╝ 
+                              ÔöîÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÉ 
+                              Ôöé   finanza.mmb    Ôöé 
+                              Ôöé  (Money Manager) Ôöé 
+                              ÔööÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÿ 
+2.2 Arquitectura de dos capas 
+Esta es la decisi├│n central, defendida por los cuatro informes con ├®nfasis especialmente fuerte en el de 
+OpenAI: separar la base de staging de la base productiva. 
+Por qu├® dos capas y no una 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 16 de 54 
+Beneficio Justificaci├│n 
+Atomicidad y rollback staging permite reintentar lotes completos sin riesgo. Si la inserci├│n a 
+finanza.mmb falla a mitad de camino, el rollback de SQLite restaura el estado y los 
+datos siguen sanos en staging. 
+Idempotencia el hash FITID sint├®tico se calcula y persiste en staging antes de tocar MMEX. Volver 
+a correr el pipeline con los mismos inputs no produce duplicados. 
+Auditabilidad cada fila en finanza.mmb se vincula v├¡a hash a su artefacto crudo (raw_text del 
+email, OFX file path, scraping HTML snapshot). 
+Multi-fuente una transacci├│n de tarjeta puede aparecer en email Y en OFX semanas despu├®s; la 
+fusi├│n ocurre en staging, MMEX solo recibe el registro consolidado. 
+Evoluci├│n si un d├¡a se cambia de MMEX a Firefly III o a otra herramienta, el writer es lo ├║nico 
+que se reescribe. Toda la inteligencia de extracci├│n/normalizaci├│n se preserva. 
+Convivencia con MMEX 
+abierto 
+si Ricardo est├í editando finanza.mmb manualmente, staging puede seguir 
+aceptando ingestas. El writer espera la pr├│xima ventana de cierre. 
+ 
+2.3 Componentes y responsabilidades 
+Inventario de m├│dulos 
+Carpeta Responsabilidad Archivos clave 
+adapters/ Un parser por fuente. Convierte input crudo a 
+CanonicalTx. 
+be_email.py, cmr_email.py, 
+mach_email.py, mp_api.py, 
+scraping_be.py, scraping_cmr.py, 
+ofx_loader.py, csv_loader.py, 
+pdf_loader.py, manual_entry.py 
+staging/ Capa de persistencia y queries sobre staging.db. schema.sql, repo.py, migrations/ 
+etl/ L├│gica de normalizaci├│n, fuzzy match, hash FITID, 
+detecci├│n de transferencias internas, 
+conciliaci├│n. 
+normalize.py, fuzzy.py, fitid.py, 
+transfers.py, reconcile.py, 
+llm_fallback.py 
+writer/ Escritura a finanza.mmb (OFX export en Fase 1; 
+SQL directo en Fase 2). 
+ofx_export.py, mmex_sql.py, 
+mmex_lock.py, backup.py 
+orchestrator/ Glue: orquesta cada fuente como un Job, 
+gestiona excepciones y retries, escribe logs. 
+jobs.py, scheduler.py, alerts.py 
+ui/ Peque├▒a UI Qt para review queue, quick-add 
+manual y status del pipeline. 
+review_window.py, quickadd.py, 
+status_panel.py 
+secrets/ Wrapper a Windows Credential Manager / 
+keyring. ├Ünico punto de acceso a tokens y 
+storage_state. 
+vault.py 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 17 de 54 
+Carpeta Responsabilidad Archivos clave 
+cli.py Entrypoint command-line: finanzasmmex run --
+source gmail | mp | scraping-be | all 
+ 
+tests/ pytest. Fixtures con emails reales anonimizados. test_be_email.py, test_fitid.py, 
+test_writer.py, test_e2e.py 
+ 
+Contrato de interfaz central: CanonicalTx 
+Todos los adapters producen instancias de la misma clase. Esto es el "protocol layer" del sistema. 
+@dataclass(frozen=True) 
+class CanonicalTx: 
+    # Identidad y origen 
+    tx_uid: str                     # UUID4 generado al ingestar 
+    owner: Literal['ricardo', 'laura', 'joint'] 
+    source_type: Literal['email', 'mp_api', 'scraping', 'ofx', 
+                         'csv', 'pdf', 'manual'] 
+    source_file: str | None         # path local o gmail message-id 
+    source_ref: str | None          # message-id, run_id de scraping, etc. 
+    raw_text: str                   # texto crudo del email/HTML/PDF 
+    content_sha256: str             # hash del raw_text completo 
+  
+    # Temporalidad 
+    event_date: date | None         # fecha de la transacci├│n real 
+    booking_date: date | None       # fecha contable del banco 
+    posted_date: date | None        # fecha en que aparece en el extracto 
+  
+    # Cuantitativo 
+    amount: Decimal                 # SIEMPRE positivo, direcci├│n por separado 
+    currency: str                   # CLP por default, USD si aplica 
+    direction: Literal['debit', 'credit'] 
+  
+    # Cuenta / tarjeta 
+    account_alias: str              # 'BE_Ricardo_RUT', 'CMR_Laura' 
+    card_last4: str | None 
+  
+    # Comercio 
+    merchant_raw: str               # como vino del banco 
+    merchant_norm: str | None       # normalizado por dict + RapidFuzz 
+  
+    # Tipolog├¡a contable 
+    tx_type: Literal['purchase', 'bill_payment', 'transfer_in', 
+                     'transfer_out', 'internal_transfer', 
+                     'refund', 'cash_withdrawal', 'fee'] 
+  
+    # Categorizaci├│n 
+    category_guess: str | None      # 'Comida', 'Servicios' 
+    subcategory_guess: str | None 
+    tags: list[str]                 # ['joint'], ['personal'] 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 18 de 54 
+    # Trazabilidad 
+    parser_name: str                # 'be_email_v3' 
+    parser_version: str 
+    needs_review: bool              # True si hay ambig├╝edad 
+  
+    # FITID sint├®tico (calculado en ETL, no en adapter) 
+    fitid_synthetic: str | None = None 
+Esta  clase  es  inmutable  (frozen=True).  Cada  modificaci├│n  produce  una  copia  nueva,  lo  que  facilita  el 
+rastreo y los tests. 
+2.4 Modelo de datos can├│nico (staging.db) 
+staging.db es una base SQLite local que vive en C:\Finanzas\staging\staging.db. Su esquema es m├ís rico 
+que el de MMEX porque guarda metadatos de origen, hashes y audit trail. 
+Tabla principal: canonical_tx 
+CREATE TABLE canonical_tx ( 
+    tx_uid                TEXT PRIMARY KEY, 
+    owner                 TEXT NOT NULL CHECK (owner IN ('ricardo','laura','joint')), 
+    source_type           TEXT NOT NULL, 
+    source_file           TEXT, 
+    source_ref            TEXT, 
+    content_sha256        TEXT NOT NULL, 
+    raw_text              TEXT, 
+  
+    event_date            TEXT, 
+    booking_date          TEXT, 
+    posted_date           TEXT, 
+  
+    amount                REAL NOT NULL CHECK (amount > 0), 
+    currency              TEXT NOT NULL DEFAULT 'CLP', 
+    direction             TEXT NOT NULL CHECK (direction IN ('debit','credit')), 
+  
+    account_alias         TEXT NOT NULL, 
+    card_last4            TEXT, 
+  
+    merchant_raw          TEXT, 
+    merchant_norm         TEXT, 
+  
+    tx_type               TEXT NOT NULL, 
+    category_guess        TEXT, 
+    subcategory_guess     TEXT, 
+    tags_json             TEXT,         -- JSON array 
+  
+    fitid_synthetic       TEXT NOT NULL,  -- hash determinista 
+    parser_name           TEXT NOT NULL, 
+    parser_version        TEXT NOT NULL, 
+    needs_review          INTEGER NOT NULL DEFAULT 0, 
+    review_reason         TEXT, 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 19 de 54 
+    -- Estado en MMEX 
+    mmex_account_id       INTEGER, 
+    mmex_tx_id            INTEGER,       -- TRANSID en CHECKINGACCOUNT_V1 
+    mmex_status           TEXT NOT NULL DEFAULT 'pending' 
+                          CHECK (mmex_status IN ('pending','exported',' 
+                                                  inserted','rejected')), 
+  
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')), 
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+  
+CREATE UNIQUE INDEX uq_canonical_fitid ON canonical_tx(fitid_synthetic); 
+CREATE INDEX idx_canonical_owner_date ON canonical_tx(owner, posted_date); 
+CREATE INDEX idx_canonical_status     ON canonical_tx(mmex_status); 
+CREATE INDEX idx_canonical_match      ON canonical_tx( 
+    owner, account_alias, amount, posted_date, merchant_norm); 
+Tabla de soporte: raw_artifacts 
+Cada email, HTML scrapeado, PDF original, response JSON de Mercado Pago se guarda ├¡ntegro aqu├¡. Es la 
+"fuente de verdad" para reprocesar todo si el parser cambia. 
+CREATE TABLE raw_artifacts ( 
+    artifact_id      TEXT PRIMARY KEY,    -- UUID4 
+    artifact_type    TEXT NOT NULL,       -- 'email','mp_response','html','pdf' 
+    source_ref       TEXT NOT NULL,       -- gmail msg-id, run_id, file path 
+    content_sha256   TEXT NOT NULL, 
+    payload_blob     BLOB,                -- contenido binario crudo 
+    payload_text     TEXT,                -- contenido textual extra├¡do 
+    fetched_at       TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+  
+CREATE UNIQUE INDEX uq_raw_sha ON raw_artifacts(content_sha256); 
+Tabla de reglas: category_rules 
+Diccionario local de normalizaci├│n merchant ÔåÆ categor├¡a/payee. Es editable por Ricardo a mano (sqlite 
+browser). Se carga al inicio en memoria. 
+CREATE TABLE category_rules ( 
+    rule_id            INTEGER PRIMARY KEY, 
+    pattern            TEXT NOT NULL,         -- substring o regex 
+    pattern_type       TEXT NOT NULL CHECK (pattern_type IN ('substr','regex','fuzzy')), 
+    merchant_norm      TEXT NOT NULL,         -- 'Amazon' 
+    payee_id_mmex      INTEGER,               -- PAYEEID en MMEX (si ya existe) 
+    category_name      TEXT NOT NULL,         -- 'Compras Online' 
+    subcategory_name   TEXT, 
+    fuzzy_threshold    INTEGER DEFAULT 85,    -- 0-100, solo si type=fuzzy 
+    priority           INTEGER NOT NULL DEFAULT 100, 
+    active             INTEGER NOT NULL DEFAULT 1, 
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+  
+CREATE INDEX idx_rules_active_priority ON category_rules(active, priority); 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 20 de 54 
+Tabla de auditor├¡a: merge_log y reconcile_log 
+Cada fusi├│n de transacciones (email + OFX correspondiente) y cada reconciliaci├│n de balance se registra. 
+Es la base para el reporte HTML diario. 
+CREATE TABLE merge_log ( 
+    merge_id         INTEGER PRIMARY KEY, 
+    fitid_synthetic  TEXT NOT NULL, 
+    sources_json     TEXT NOT NULL,         -- ['email#abc', 'ofx#xyz'] 
+    chosen_source    TEXT NOT NULL,         -- cu├íl gan├│ cada campo 
+    merged_at        TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+  
+CREATE TABLE reconcile_log ( 
+    reconcile_id     INTEGER PRIMARY KEY, 
+    account_alias    TEXT NOT NULL, 
+    period_start     TEXT NOT NULL, 
+    period_end       TEXT NOT NULL, 
+    balance_initial  REAL NOT NULL, 
+    balance_final    REAL NOT NULL, 
+    sum_credits      REAL NOT NULL, 
+    sum_debits       REAL NOT NULL, 
+    expected_final   REAL NOT NULL, 
+    status           TEXT NOT NULL CHECK (status IN ('ok','off','manual_review')), 
+    delta            REAL NOT NULL,         -- balance_final - expected_final 
+    notes            TEXT, 
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+2.5 Mapeo a tablas MMEX 
+Money Manager Ex 1.9.2 (schema v21) expone su base SQLite con tablas que terminan en _V1. Esta es la 
+traducci├│n de CanonicalTx ÔåÆ registros MMEX. 
+Campo CanonicalTx Destino en MMEX Notas 
+tx_uid (no se mapea ÔÇö vive solo en staging) Trazabilidad interna 
+fitid_synthetic CUSTOMFIELDDATA_V1.CONTENT (REFID = 
+TRANSID, FIELDID = ID del campo "Hash") 
+DEDUPE central. Este es el truco 
+para evitar el problema hist├│rico de 
+duplicados al reimportar. 
+account_alias ACCOUNTLIST_V1.ACCOUNTNAME ÔåÆ 
+resolver a ACCOUNTID 
+Cada alias del staging mapea a una 
+cuenta ├║nica en MMEX. 
+merchant_norm PAYEE_V1.PAYEENAME ÔåÆ resolver/crear 
+PAYEEID 
+Si el payee no existe, se crea con 
+CATEGID=ÔêÆ1 (sin categor├¡a por 
+default). 
+category_guess CATEGORY_V1.CATEGNAME ÔåÆ CATEGID (con 
+CATEGORY_V1.PARENTID para subcategor├¡as 
+anidadas v21) 
+Mantener jerarqu├¡a padre/hijo 
+desde MMEX 1.7+. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 21 de 54 
+Campo CanonicalTx Destino en MMEX Notas 
+amount + direction CHECKINGACCOUNT_V1.TRANSAMOUNT + 
+TRANSCODE 
+TRANSCODE='Withdrawal' si 
+direction='debit', 'Deposit' si 
+'credit', 'Transfer' si 
+tx_type='internal_transfer'. 
+posted_date CHECKINGACCOUNT_V1.TRANSDATE 
+(formato ISO 'YYYY-MM-DD') 
+Validaci├│n contra fecha futura y 
+contra fecha < 2020-01-01. 
+raw_text ATTACHMENT_V1 (si > 4KB) o NOTES (si 
+corto) 
+Texto largo va como adjunto, no 
+como NOTES. 
+tags (joint, personal) TAG_V1 + TAGLINK_V1 (REFID=TRANSID, 
+TAGID resuelto desde TAG_V1) 
+El motor de reportes de MMEX 
+permite filtrar por tags. 
+needs_review = true CHECKINGACCOUNT_V1.STATUS = 'F' 
+(Followup) 
+Aprovecha el marcador nativo de 
+MMEX para revisi├│n humana. 
+internal_transfer TRANSCODE='Transfer' + TOACCOUNTID + 
+TOTRANSAMOUNT 
+Solo si ambos extremos son 
+cuentas modeladas en MMEX. 
+ 
+Tabla CHECKINGACCOUNT_V1 (esquema completo, MMEX 1.9.2 v21) 
+Las  columnas  relevantes  para  inserci├│n  son:  TRANSID  (PK),  ACCOUNTID,  TOACCOUNTID,  PAYEEID, 
+TRANSCODE ('Withdrawal'|'Deposit'|'Transfer'), TRANSAMOUNT, STATUS ('R'|'F'|'V'|'D'|''), 
+TRANSACTIONNUMBER, NOTES, CATEGID, TRANSDATE, LASTUPDATEDTIME, FOLLOWUPID, 
+TOTRANSAMOUNT,  COLOR,  DELETEDTIME.  La  columna  FITID  YA  EXISTE  en  v21  (a├▒adida  por  la  utilidad 
+OfxToMmex).  Esto  significa  que  si  Ricardo  importa  OFX  en  lugar  de  hacer  INSERT  directo,  MMEX  hace 
+deduplicaci├│n autom├ítica por FITID ÔÇö y esa es la ruta menos invasiva para Fase 1. 
+2.6 Estrategia de fuentes (detalle por banco) 
+BancoEstado 
+ÔÇó Estado real (mayo 2026): el portal soporta lectura headful con BE Pass (push al celular una vez por 
+sesi├│n) y storage_state v├ílido por horas. Headless es bloqueado por TLS fingerprinting + dispositivo 
+m├│vil registrado. La ventana de tarjeta de coordenadas se cerr├│ completamente en agosto 2026. 
+ÔÇó Pipeline primario: Gmail API con regex sobre asunto y cuerpo. Latencia ~1 minuto por transacci├│n. 
+ÔÇó Pipeline contingencia: Playwright  headful, ejecuci├│n semanal con Ricardo presente  al inicio. Solo 
+lectura de movimientos. Export OFX cuando est├® disponible. 
+ÔÇó Cu├índo Ricardo necesita intervenir: 1 sesi├│n semanal de ~5 minutos para refrescar storage_state. 
+Banco Falabella / CMR 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 22 de 54 
+ÔÇó Estado real: el sitio permite leer movimientos en modo headful, pero cualquier acci├│n transaccional 
+(y a veces el login mismo) gatilla Clave Din├ímica v├¡a SMS. Para SOLO LECTURA, el flujo semi-auto 
+funciona bien. 
+ÔÇó Pipeline primario: Gmail API (las notificaciones de compra CMR llegan por email para casi todo). 
+ÔÇó Pipeline  contingencia: Playwright  headful  con  storage_state. La  sesi├│n  es  estable  mientras  no 
+expire. 
+MachBCI 
+ÔÇó Estado real: no tiene web banking p├║blico para personas. El historial est├í solo en la app m├│vil. La 
+API   en   docs.business-api.soymach.com   es   exclusiva   para   comercios;   no   hay   endpoint   para 
+movimientos personales. 
+ÔÇó V├¡as  reales: (a)  emails  de  notificaci├│n  (cuando  est├®n  configurados),  (b)  export  manual  mensual 
+desde la app. 
+ÔÇó Decisi├│n: no se intenta scraping ni API privada. Mach queda en modo "email + manual". Es la fuente 
+con menor cobertura automatizada y eso se acepta como restricci├│n del entorno. 
+Mercado Pago 
+ÔÇó Estado real: tiene API oficial documentada (/v1/payments/search, 
+/v1/account/settlement_report/config) accesible con OAuth. 
+ÔÇó Pipeline primario: API oficial. Es la ├║nica fuente con API leg├¡tima del set. Es el camino m├ís limpio y 
+el primero que debe atacarse. 
+ÔÇó Implementaci├│n: crear una "aplicaci├│n" de developer en Mercado Pago, autorizar con la cuenta de 
+Ricardo  v├¡a  Authorization  Code  flow  una  sola  vez,  persistir  refresh_token  en  keyring.  La  tarea 
+programada hace refresh y consulta sin intervenci├│n humana. 
+2.7 Pipelines de ingesti├│n 
+Pipeline Gmail 
+Esta es la fuente m├ís rica en cobertura. Funciona desatendida v├¡a Task Scheduler. 
+# orchestrator/jobs.py ÔÇö pseudoc├│digo del job Gmail 
+  
+def run_gmail_sync(since_iso: str = None) -> JobResult: 
+    creds   = vault.get_oauth('gmail')          # refresh autom├ítico 
+    service = build('gmail', 'v1', credentials=creds) 
+  
+    query   = f'label:Bancos newer_than:1d' if since_iso is None \ 
+              else f'label:Bancos after:{since_iso}' 
+  
+    msgs    = list_messages(service, query) 
+  
+    for msg in msgs: 
+        artifact = persist_raw_artifact(msg)    # raw_artifacts table 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 23 de 54 
+        sender   = extract_header(msg, 'From') 
+        adapter  = ADAPTER_REGISTRY.resolve(sender)  # be|cmr|mach|mp|other 
+        if adapter is None: 
+            log.warning('unknown_sender', sender=sender) 
+            continue 
+        try: 
+            tx_list = adapter.parse(msg, artifact)   # ÔåÆ list[CanonicalTx] 
+        except ParseError as e: 
+            tx_list = llm_fallback.parse(msg, artifact, hint=adapter.name) 
+        for tx in tx_list: 
+            staging.upsert(tx)                       # idempotente por fitid 
+  
+    return JobResult(processed=len(msgs)) 
+Pipeline Mercado Pago API 
+Cadencia: 6 horas. Refresca token autom├íticamente. 
+# adapters/mp_api.py ÔÇö pseudoc├│digo del job MP 
+  
+def fetch_mp_movements(since: date) -> list[CanonicalTx]: 
+    token = vault.get_oauth('mp_api').refresh_if_expired() 
+    payments = mp_client.payments.search( 
+        token=token, 
+        begin_date=since.isoformat(), 
+        end_date=date.today().isoformat(), 
+        sort='date_created', 
+        order='asc', 
+    ) 
+    return [normalize_mp_payment(p) for p in payments] 
+Pipeline Playwright headful (semi-asistido) 
+Cadencia: ejecuci├│n semanal o on-demand v├¡a CLI. Ricardo recibe un push del BE Pass / SMS al iniciar. 
+# adapters/scraping_be.py ÔÇö pseudoc├│digo 
+  
+async def scrape_bancoestado(since: date) -> list[CanonicalTx]: 
+    state_path = vault.get_path('be_storage_state') 
+    async with async_playwright() as pw: 
+        browser = await pw.chromium.launch(headless=False)   # HEADFUL 
+        ctx     = await browser.new_context( 
+                     storage_state=state_path if exists() else None) 
+        page    = await ctx.new_page() 
+        await page.goto('https://www.bancoestado.cl') 
+        if not await is_logged_in(page): 
+            console.print('Por favor completa el login y aprueba BE Pass.') 
+            await page.wait_for_url('**/dashboard**', timeout=180_000) 
+            await ctx.storage_state(path=state_path) 
+        movs = await navigate_and_extract_movements(page, since) 
+        return [normalize_be_movement(m) for m in movs] 
+2.8 Motor ETL: normalizaci├│n + categorizaci├│n 
+Pipeline ETL 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 24 de 54 
+Cada CanonicalTx que entra a staging pasa por las siguientes etapas. El orden es cr├¡tico (la categorizaci├│n 
+depende del merchant_norm; el FITID depende del merchant_norm). 
+1. Persistir crudo en raw_artifacts (sha256 deduplica el artefacto en s├¡). 
+2. Normalizar fechas (todas a YYYY-MM-DD ISO). 
+3. Normalizar monto (Decimal con 2 decimales, signo absoluto, direcci├│n por separado). 
+4. Normalizar merchant: aplicar reglas substr/regex de category_rules ordenadas por prioridad. 
+5. Si ninguna regla matchea: aplicar fuzzy contra merchant_norm hist├│ricos (RapidFuzz, threshold=85). 
+6. Si fuzzy tampoco: marcar needs_review=1 y dejar merchant_raw como merchant_norm. 
+7. Calcular fitid_synthetic = 
+sha256(owner|account_alias|posted_date|amount_str|merchant_norm). 
+8. Detectar  transferencia  interna  (ver  2.9):  si  encuentra  par,  marcar  tx_type='internal_transfer'  y 
+enlazar. 
+9. Insertar  /  upsert  en  canonical_tx  por  fitid_synthetic.  Si  ya  existe,  fusionar  campos  preferiendo 
+extracto > email > LLM > OCR. 
+10. Validar conciliaci├│n de  balance  (ver 2.10) ÔÇö solo aplica para extractos completos, no para emails 
+sueltos. 
+Diccionario inicial de normalizaci├│n 
+Se siembra al inicio con reglas de los comercios chilenos m├ís frecuentes en sus emails: 
+Pattern Type Merchant Norm Categor├¡a 
+AMZN MKTP* 
+substr Amazon Compras Online 
+UBER *EATS 
+substr Uber Eats Comida a Domicilio 
+UBER *TRIP 
+substr Uber Transporte 
+PAYPAL * 
+regex (seg├║n campo merchant) (deferred) 
+LIDER 
+fuzzy Walmart Lider Supermercado 
+JUMBO 
+fuzzy Jumbo Supermercado 
+COPEC 
+substr Copec Combustible 
+SHELL 
+substr Shell Combustible 
+NETFLIX 
+substr Netflix Suscripciones 
+ENTEL 
+substr Entel Telefon├¡a 
+AGUAS ANDINAS 
+substr Aguas Andinas Servicios B├ísicos 
+ENEL 
+substr Enel Servicios B├ísicos 
+ 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 25 de 54 
+LLM fallback (Ollama + Qwen3 8B) 
+Cuando  el  regex  de  un  parser  espec├¡fico  falla  (banco  cambi├│  plantilla),  se  invoca  el  LLM  local  con  un 
+prompt restrictivo: 
+# etl/llm_fallback.py 
+  
+PROMPT = '''Extrae los siguientes campos del email bancario. 
+Responde SOLO con JSON v├ílido, sin texto adicional, sin markdown. 
+Si un campo no se puede determinar, usa null. 
+  
+Schema requerido: 
+{ 
+  "posted_date": "YYYY-MM-DD", 
+  "amount": <number positivo, sin signo>, 
+  "direction": "debit"|"credit", 
+  "merchant_raw": "<string>", 
+  "card_last4": "<4 digits>"|null, 
+  "tx_type": "purchase"|"bill_payment"|"transfer_in"|"transfer_out" 
+} 
+  
+Email a procesar: 
+<<<EMAIL>>> 
+{email_text} 
+<<<END>>> 
+''' 
+  
+def parse_with_llm(email_text: str, hint: str | None) -> dict: 
+    response = ollama.chat( 
+        model='qwen3:8b', 
+        format='json',                          # forzar JSON-mode 
+        messages=[{'role':'user', 
+                  'content': PROMPT.format(email_text=email_text)}], 
+        options={'temperature': 0.0}, 
+    ) 
+    data = json.loads(response['message']['content']) 
+    validate_schema(data)                       # raise si malformed 
+    return data 
+Si  el  LLM  tambi├®n  falla  o  devuelve  JSON  inv├ílido,  la  transacci├│n  se  marca  needs_review=1  con 
+review_reason='llm_fallback_failed' y aparece en el reporte HTML. 
+2.9 Estrategia de deduplicaci├│n 
+C├│mo se calcula fitid_synthetic 
+# etl/fitid.py 
+  
+def synthetic_fitid(tx: CanonicalTx) -> str: 
+    # Importante: usar merchant_NORM (ya canonicalizado), no raw 
+    # Importante: amount con dos decimales fijos, sin notaci├│n exponencial 
+    payload = '|'.join([ 
+        tx.owner, 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 26 de 54 
+        tx.account_alias, 
+        tx.posted_date.isoformat() if tx.posted_date else 'NA', 
+        f'{tx.amount:.2f}', 
+        tx.direction, 
+        (tx.merchant_norm or tx.merchant_raw or 'UNKNOWN').upper(), 
+    ]) 
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest() 
+Sliding window para conciliaci├│n email Ôåö extracto 
+Cuando un email llega el d├¡a 1 (autorizaci├│n) y el extracto liquida el d├¡a 3 con el descriptor real, los hashes 
+pueden  divergir  si  merchant_norm  difiere  ligeramente. La  funci├│n  match_with_sliding_window  agrupa 
+transacciones candidatas: 
+def match_sliding_window( 
+    new_tx: CanonicalTx, 
+    window_days: int = 14, 
+) -> CanonicalTx | None: 
+    candidates = staging.find( 
+        owner=new_tx.owner, 
+        account_alias=new_tx.account_alias, 
+        amount=new_tx.amount, 
+        direction=new_tx.direction, 
+        date_from=new_tx.posted_date - timedelta(days=window_days), 
+        date_to  =new_tx.posted_date + timedelta(days=window_days), 
+    ) 
+    for c in candidates: 
+        sim = rapidfuzz.fuzz.token_set_ratio( 
+            c.merchant_norm or c.merchant_raw, 
+            new_tx.merchant_norm or new_tx.merchant_raw, 
+        ) 
+        if sim >= 75: 
+            return c 
+    return None 
+Reglas de fusi├│n cuando hay match 
+ÔÇó Banco/extracto vence a email en posted_date, monto final exacto, referencia formal. 
+ÔÇó Email vence a banco en texto descriptivo legible del comercio (los emails suelen tener nombres m├ís 
+limpios). 
+ÔÇó OCR/PDF rellena huecos pero no derrota a OFX/CSV salvo que no haya otra fuente. 
+ÔÇó Si hay discrepancia en monto o direcci├│n no se fusionan: ambos se marcan needs_review=1. 
+Detecci├│n de transferencias internas 
+def detect_internal_transfer( 
+    tx: CanonicalTx, 
+    window_hours: int = 24, 
+) -> CanonicalTx | None: 
+    """Busca el contraparte de una transferencia interna. 
+    Ej: retiro $50.000 cuenta Ricardo ÔåÆ dep├│sito $50.000 cuenta Laura. 
+    """ 
+    if tx.tx_type not in ('transfer_in', 'transfer_out'): 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 27 de 54 
+        return None 
+    opposite = 'credit' if tx.direction == 'debit' else 'debit' 
+    candidate = staging.find_one( 
+        owner_in=['ricardo','laura'],          # cuentas familiares 
+        amount=tx.amount, 
+        direction=opposite, 
+        date_from=tx.posted_date - timedelta(hours=window_hours), 
+        date_to  =tx.posted_date + timedelta(hours=window_hours), 
+        account_alias_neq=tx.account_alias,    # cuenta DISTINTA 
+    ) 
+    if candidate is None: 
+        return None 
+    # Marcar ambos como par 
+    return candidate 
+2.10 Conciliaci├│n matem├ítica ("Regla de Oro") 
+Tomado del informe de Gemini: cada extracto bancario procesado debe satisfacer: 
+B_final = B_initial + ╬ú creditos ÔêÆ ╬ú debitos 
+  
+# Implementaci├│n: 
+def reconcile_account(account_alias, period_start, period_end): 
+    bal_ini = bank_reported_balance(account_alias, period_start) 
+    bal_fin = bank_reported_balance(account_alias, period_end) 
+    sum_c   = sum(tx.amount for tx in txs if tx.direction == 'credit') 
+    sum_d   = sum(tx.amount for tx in txs if tx.direction == 'debit') 
+    expected = bal_ini + sum_c - sum_d 
+    delta    = bal_fin - expected 
+    if abs(delta) <= Decimal('0.01'): 
+        return ReconcileResult.OK 
+    elif abs(delta) <= bal_ini * Decimal('0.001'): 
+        return ReconcileResult.MINOR_ROUNDING 
+    else: 
+        return ReconcileResult.OFF                 # bloquea writer 
+Si el resultado es OFF, ninguna transacci├│n del lote se inyecta a finanza.mmb. El reporte HTML muestra 
+delta y solicita revisi├│n manual. 
+2.11 Estrategia multi-usuario 
+Cuentas separadas (no datos separados) 
+Tomado del informe de NotebookLM: NO se crean dos archivos .mmb, ni dos bases de datos distintas. Se 
+modela TODO en un ├║nico finanza.mmb con ACCOUNTID separados: 
+ÔÇó BE_Ricardo_RUT (cuenta corriente Ricardo) 
+ÔÇó BE_Laura_RUT (cuenta corriente Laura) 
+ÔÇó CMR_Ricardo (tarjeta CMR Ricardo) 
+ÔÇó CMR_Laura (tarjeta CMR Laura) 
+ÔÇó MachBCI_Ricardo, MP_Ricardo, etc. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 28 de 54 
+Esto permite ver el estado financiero familiar consolidado en MMEX y filtrar por cuenta cuando se necesita 
+reporte individual. 
+2.12 Gastos compartidos: Tags 
+La  tabla  TAG_V1  +  TAGLINK_V1  de  MMEX  permite  etiquetar  transacciones  con  m├║ltiples  tags.  La 
+estrategia es: 
+ÔÇó Tag 'Conjunto' ÔÇö gastos del hogar (supermercado, servicios b├ísicos, vacaciones). 
+ÔÇó Tag 'Personal-R' / 'Personal-L' ÔÇö gastos individuales no compartidos. 
+ÔÇó Tag 'Reembolsable' ÔÇö gastos que un c├│nyuge debe a otro. 
+Las  reglas  de  auto-tagging  viven  en  category_rules.tags_json:  por  ejemplo,  todo  gasto  en  "Jumbo"  se 
+taggea  autom├íticamente como Conjunto. Los reportes de MMEX permiten filtrar por (TagA OR TagB) y 
+AND complejos. 
+2.13 Estructura de archivos del proyecto 
+C:\Finanzas\ 
+Ôö£ÔöÇÔöÇ finanza.mmb                       # Money Manager Ex (NUNCA tocado salvo por writer) 
+Ôö£ÔöÇÔöÇ backups\ 
+Ôöé   Ôö£ÔöÇÔöÇ finanza_2026-05-02_pre.mmb    # snapshot inmediato pre-escritura 
+Ôöé   Ôö£ÔöÇÔöÇ finanza_2026-05-02_post.mmb 
+Ôöé   ÔööÔöÇÔöÇ ... (rotaci├│n 30 d├¡as) 
+Ôö£ÔöÇÔöÇ staging\ 
+Ôöé   ÔööÔöÇÔöÇ staging.db                    # SQLite can├│nico 
+Ôö£ÔöÇÔöÇ drop\                            # carpeta a vigilar (Watcher) 
+Ôöé   Ôö£ÔöÇÔöÇ ofx\ 
+Ôöé   Ôö£ÔöÇÔöÇ csv\ 
+Ôöé   ÔööÔöÇÔöÇ pdf\ 
+Ôö£ÔöÇÔöÇ logs\ 
+Ôöé   Ôö£ÔöÇÔöÇ 2026-05-02.log 
+Ôöé   ÔööÔöÇÔöÇ ... 
+Ôö£ÔöÇÔöÇ reports\                         # HTML diarios 
+Ôöé   ÔööÔöÇÔöÇ review_2026-05-02.html 
+ÔööÔöÇÔöÇ code\                            # repositorio git 
+    Ôö£ÔöÇÔöÇ pyproject.toml 
+    Ôö£ÔöÇÔöÇ README.md 
+    Ôö£ÔöÇÔöÇ SPEC.md 
+    Ôö£ÔöÇÔöÇ ARCHITECTURE.md 
+    Ôö£ÔöÇÔöÇ src\finanzasmmex\ 
+    Ôöé   Ôö£ÔöÇÔöÇ __init__.py 
+    Ôöé   Ôö£ÔöÇÔöÇ cli.py 
+    Ôöé   Ôö£ÔöÇÔöÇ adapters\ 
+    Ôöé   Ôö£ÔöÇÔöÇ staging\ 
+    Ôöé   Ôö£ÔöÇÔöÇ etl\ 
+    Ôöé   Ôö£ÔöÇÔöÇ writer\ 
+    Ôöé   Ôö£ÔöÇÔöÇ orchestrator\ 
+    Ôöé   Ôö£ÔöÇÔöÇ ui\ 
+    Ôöé   ÔööÔöÇÔöÇ secrets\ 
+    ÔööÔöÇÔöÇ tests\ 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 29 de 54 
+2.14 Concurrencia: el problema de MMEX abierto 
+SQLite gestiona bloqueos a nivel de archivo. Si MMEX est├í abierto en modo edici├│n, finanza.mmb tiene 
+un lock activo y un INSERT de Python recibir├í database is locked. 
+Estrategia (informe Claude + Gemini): 
+11. Antes de cada escritura, el writer hace un SELECT 1 con timeout 0. Si recibe lock, marca el job como 
+deferred. 
+12. Si est├í en modo schedule, simplemente reprograma para 1 hora despu├®s. 
+13. Si est├í en modo CLI manual, imprime un mensaje claro y sale con c├│digo 75 (EX_TEMPFAIL). 
+14. Para Fase 1 (export OFX), el problema desaparece: Ricardo abre MMEX cuando ├®l decide y le hace 
+File ÔåÆ Import OFX. 
+Por qu├® MMEX no soporta m├║ltiples escritores simult├íneos 
+MMEX en modo edici├│n mantiene transacciones largas en SQLite que bloquean. SQLite con WAL permite 
+"muchos  lectores  +  un  escritor"  pero  MMEX  no  usa  WAL  por  default  y  mantiene  escritores  activos  en 
+sesiones largas. La soluci├│n correcta no es forzar concurrencia: es serializar. Si el writer encuentra lock, 
+espera. Los datos siguen sanos en staging.db. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 30 de 54 
+3. Decisiones t├®cnicas (con justificaci├│n) 
+Esta secci├│n documenta cada decisi├│n donde los cuatro informes diverg├¡an y explica qu├® se eligi├│ y por 
+qu├®.  Es  deliberadamente  m├ís  larga  que  las  anteriores  porque  cada  decisi├│n  queda  registrada  para  no 
+revisitarla en plena implementaci├│n. 
+3.1 Python local + SQLite directo (vs CSV en MVP) 
+ÔÇó Posiciones: Gemini y NotebookLM proponen escritura SQL directa desde Fase 1. OpenAI (y Claude) 
+recomiendan empezar con CSV/OFX y migrar a SQL en Fase 2. 
+ÔÇó Decisi├│n: Empezar con OFX export en Fase 1, migrar a SQL directo en Fase 2. 
+ÔÇó Raz├│n: El  campo  FITID  YA  EXISTE  en  CHECKINGACCOUNT_V1  desde  la  utilidad  OfxToMmex.  Si 
+exportamos OFX con FITID sint├®tico, MMEX hace deduplicaci├│n nativa por nosotros ÔÇö sin escribir 
+una l├¡nea de c├│digo de SQL en MMEX. Esto valida toda la l├│gica de extracci├│n y deduplicaci├│n antes 
+de tocar el archivo .mmb directamente. Reduce el riesgo en ├│rdenes de magnitud. 
+3.2 OAuth Gmail API en lugar de IMAP 
+ÔÇó Posiciones: OpenAI sugiere IMAP+local cache. Claude (y memoria del proyecto previo) recomienda 
+Gmail API. 
+ÔÇó Decisi├│n: Gmail API. 
+ÔÇó Raz├│n: El proyecto previo de Ricardo ya implement├│ Gmail API con OAuth y refresh token persistido. 
+IMAP  requiere  App  Passwords  (que  Google  est├í  depreciando)  o  OAuth  XOAUTH2  (que  es  m├ís 
+complejo  que  la  API  directa).  Con  Gmail  API  tenemos:  (a)  consultas  server-side eficientes  con 
+label:Bancos, (b) marcado de mensajes como le├¡dos opcional, (c) pagination nativa, (d) refresh token 
+estable. 
+3.3 Ollama/Qwen3 8B como fallback sem├íntico 
+ÔÇó Posiciones: NotebookLM  enfatiza  LLM  local  como  capa  primaria.  Gemini  y  Claude  lo  consideran 
+secundario. 
+ÔÇó Decisi├│n: Regex como capa primaria, LLM solo como fallback cuando el regex falla. 
+ÔÇó Raz├│n: Regex es 1000x m├ís r├ípido y determinista cuando funciona. El LLM se invoca quiz├ís en el 1ÔÇô
+5%  de  los  emails  (cuando  un  banco  cambia  plantilla).  El  hardware  del  laptop  (16GB  RAM)  corre 
+Qwen3 8B en CPU con latencia ~10s, aceptable para esos casos puntuales pero NO para procesar 
+50 emails diarios. Adem├ís, force JSON-mode con format='json' garantiza output parseable. 
+3.4 Playwright headful para BancoEstado y Falabella 
+ÔÇó Posiciones: Todos los informes coinciden, pero Gemini suger├¡a tantear headless primero. 
+ÔÇó Decisi├│n: Solo headful, semi-asistido. Ricardo presente al inicio. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 31 de 54 
+ÔÇó Raz├│n: Informaci├│n  de  campo  (informe  Claude):  TLS  fingerprinting  de  BancoEstado  bloquea 
+Chromium headless. BE Pass requiere humano + dispositivo m├│vil registrado. No vale la pena luchar 
+contra esto: 5 minutos semanales de Ricardo es un costo aceptable. El storage_state es v├ílido por 
+horas tras login, as├¡ que durante la sesi├│n semi-auto se puede ejecutar todo el resto. 
+3.5 Mercado Pago v├¡a OAuth 
+ÔÇó Decisi├│n: Authorization Code flow, una vez. Refresh autom├ítico. 
+ÔÇó Raz├│n: Es la ├║nica fuente con API leg├¡tima del set. No se debate. Implementaci├│n trivial con la lib 
+oficial mercadopago de PyPI. 
+3.6 MachBCI: solo email + manual 
+ÔÇó Decisi├│n: No intentar scraping de la app m├│vil ni reverse engineering. 
+ÔÇó Raz├│n: Reverse engineering de la API privada (mitmproxy + emulador Android) viola los T&C de BCI 
+y  queda  bajo  Ley  21.459  art.  2  (acceso  il├¡cito  al  sistema,  no  a  los  datos  propios ÔÇö la  diferencia 
+importa). Se deja como manual + email. 
+3.7 FITID sint├®tico en CUSTOMFIELDDATA_V1 (no en NOTES) 
+ÔÇó Posiciones: Gemini  propone  NOTES (m├ís simple).  NotebookLM  propone  CUSTOMFIELDDATA_V1. 
+OpenAI propone TAG_V1 o custom field. 
+ÔÇó Decisi├│n: CUSTOMFIELDDATA_V1, en un campo personalizado dedicado llamado "sync_hash". 
+ÔÇó Raz├│n: (a) NOTES es para que Ricardo escriba notas humanas; meter hash ah├¡ lo ensucia. (b) Tags 
+est├ín reservados para sem├íntica de  gastos (Conjunto/Personal). (c) CUSTOMFIELDDATA_V1 es  la 
+abstracci├│n nativa de MMEX para metadatos extensibles, indexable, no contamina la UI principal. 
+3.8 Tags vs Categor├¡as para gastos conjuntos 
+ÔÇó Decisi├│n: Tags (TAG_V1). 
+ÔÇó Raz├│n: Categor├¡as  son  taxonom├¡a  del  TIPO  de  gasto  (Comida,  Transporte).  Tags  son  metadata 
+ortogonal  (qui├®n  paga,  si  es  reembolsable).  Forzar  gastos  conjuntos  en  categor├¡as  obligar├¡a  a 
+duplicar todas las categor├¡as ("Comida-Conjunto", "Comida-Personal"). Tags +  reportes con filtros 
+(TagA | TagB) son m├ís limpios y nativos en MMEX. 
+3.9 Backups: c├│mo y cu├índo 
+ÔÇó Decisi├│n: Snapshot pre-escritura + post-escritura cada vez que el writer toca finanza.mmb. Rotaci├│n 
+30 d├¡as. Adicionalmente, Restic respaldando C:\Finanzas\ a un disco USB cifrado semanal. 
+ÔÇó Raz├│n: MMEX recomienda backups frecuentes. La doble copia (pre/post) permite diferenciar si un 
+problema lo caus├│ el writer o existe previamente. Restic agrega protecci├│n contra ransomware con 
+cifrado y retenci├│n. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 32 de 54 
+3.10 Cifrado: .mmb vs .emb vs contenedor BitLocker 
+ÔÇó Decisi├│n: Operaci├│n diaria sobre .mmb plano dentro de carpeta protegida por BitLocker. Conversi├│n 
+opcional a .emb solo si Ricardo decide despu├®s. 
+ÔÇó Raz├│n: (a)  .emb  usa  wxSQLite3  con  AES-256,  NO  compatible  con  sqlite3  est├índar  de  Python  sin 
+recompilar. (b) BitLocker protege  en reposo el laptop completo. (c)  Si el threat model de Ricardo 
+incluye "alguien con acceso f├¡sico al laptop encendido", entonces s├¡ conviene .emb ÔÇö pero requiere 
+un  m├│dulo  extra  de  descifrado/recifrado  al  inicio/fin  de  cada  job.  Decisi├│n:  Fase  1  plain  .mmb  + 
+BitLocker; .emb queda en backlog. 
+3.11 Refactoring del proyecto previo gmail-to-MMEX 
+ÔÇó Contexto: Ricardo  ya  tiene  un  proyecto  spec-driven  completado  en  Claude  Code  que  sincroniza 
+emails BancoEstado/Falabella a finanza.mmb. 
+ÔÇó Decisi├│n: FinanzasMMEX   absorbe   ese   proyecto   como   un   m├│dulo   (adapters/be_email.py   + 
+adapters/cmr_email.py). El proyecto anterior pasa a ser una sub-carpeta integrada, no un sistema 
+rival. 
+ÔÇó Raz├│n: Reusar tests, regex y experiencia. El gmail-to-MMEX previo es la versi├│n 0.1; FinanzasMMEX 
+1.0 es su evoluci├│n arquitect├│nica con multi-fuente, multi-usuario y dos capas. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 33 de 54 
+4. Roadmap por fases 
+Cada fase entrega valor independiente. Si Ricardo se queda sin tiempo despu├®s de Fase 1, el sistema ya 
+es ├║til. Las fases siguientes son refinamientos. 
+Fase 0 ÔÇö Setup (1ÔÇô2 d├¡as) 
+ID Tarea Definition of Done 
+F0-1 Crear repo git con estructura de carpetas. pyproject.toml con uv como 
+package manager. 
+structure committed 
+F0-2 Setup pre-commit (ruff, black, mypy strict). ruff check pasa 
+F0-3 Crear staging.db con schema.sql inicial. Wrapper repo.py. tests/test_schema.py 
+pasa 
+F0-4 Implementar vault.py con keyring (Windows Credential Manager). tests/test_vault.py 
+pasa 
+F0-5 Setup OAuth Gmail (descargar credentials.json desde Google Cloud Console; 
+primer authorize). 
+refresh_token 
+guardado en keyring 
+F0-6 Setup OAuth Mercado Pago (crear app en Developer Dashboard). refresh_token 
+guardado 
+F0-7 Instalar Ollama localmente, descargar qwen3:8b. Test de inferencia. ollama run qwen3:8b 
+responde 
+ 
+Fase 1 ÔÇö MVP (3ÔÇô5 d├¡as) 
+Meta:  ingestar  Gmail  +  Mercado  Pago,  exportar  OFX,  importar  manualmente  a  MMEX.  Sin  tocar 
+finanza.mmb desde Python a├║n. 
+ID Tarea Definition of Done 
+F1-1 Implementar adapters/be_email.py con regex sobre 5 plantillas reales de 
+BancoEstado (alertas de compra, transferencia recibida, transferencia 
+enviada, pago de servicio, retiro cajero). 
+ÔëÑ 95% extracci├│n en 
+suite de fixtures 
+F1-2 Implementar adapters/cmr_email.py para Falabella/CMR. Suite de fixtures pasa 
+F1-3 Implementar adapters/mach_email.py (subset disponible). Funcional sobre las 
+plantillas conocidas 
+F1-4 Implementar adapters/mp_api.py contra API oficial de MP. Recupera 30 d├¡as con 
+OAuth 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 34 de 54 
+ID Tarea Definition of Done 
+F1-5 Implementar etl/normalize.py + etl/fuzzy.py + etl/fitid.py. Test de idempotencia 
+pasa 
+F1-6 Implementar etl/transfers.py (detecci├│n de internas). Test con caso 
+RicardoÔåÆLaura pasa 
+F1-7 Implementar etl/llm_fallback.py con Ollama. Funciona offline; JSON 
+validado 
+F1-8 Implementar writer/ofx_export.py: genera un archivo .ofx por cuenta a 
+partir de canonical_tx. 
+MMEX lo importa sin 
+errores 
+F1-9 Implementar orchestrator/jobs.py con job_gmail y job_mp. CLI: finanzasmmex run 
+--source gmail 
+funciona 
+F1-10 Implementar reporte HTML diario. Se genera en reports/ 
+F1-11 Configurar Task Scheduler con dos tareas (gmail cada 1h, mp cada 6h). Tareas activas; logs 
+presentes 
+F1-12 Manual de usuario: c├│mo importar el OFX a MMEX. Documento en 
+docs/import_guide.md 
+ 
+Fase 2 ÔÇö Writer SQLite directo (3ÔÇô4 d├¡as) 
+Meta:  el  sistema  ya  escribe  directamente  sobre  finanza.mmb  sin  intervenci├│n  humana.  Ricardo  abre 
+MMEX y ve los registros. 
+ID Tarea Definition of Done 
+F2-1 Crear field personalizado "sync_hash" en MMEX (v├¡a UI, una sola vez). 
+Capturar FIELDID. 
+FIELDID conocido y 
+guardado en config 
+F2-2 Implementar writer/mmex_lock.py: detecci├│n de archivo bloqueado. Test simulado pasa 
+F2-3 Implementar writer/backup.py: snapshot pre/post. Backups en backups/ 
+F2-4 Implementar writer/mmex_sql.py: INSERT con BEGIN IMMEDIATE / COMMIT 
+/ ROLLBACK. Crea/resuelve PAYEE_V1, CATEGORY_V1, TAG_V1, 
+TAGLINK_V1, CUSTOMFIELDDATA_V1, CHECKINGACCOUNT_V1. 
+F2-5 Implementar dedupe pre-INSERT: query a CUSTOMFIELDDATA_V1 buscando 
+sync_hash existente. 
+No se crean 
+duplicados al re-
+correr 
+F2-6 Test E2E: limpiar finanza.mmb de prueba, correr pipeline 2 veces, verificar 
+idempotencia. 
+Test pasa 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 35 de 54 
+ID Tarea Definition of Done 
+F2-7 Modo dual: CLI flag --writer=ofx|sql para alternar. Ambos modos 
+funcionan 
+ 
+Fase 3 ÔÇö Scraping headful (4ÔÇô6 d├¡as) 
+ID Tarea Definition of Done 
+F3-1 Implementar adapters/scraping_be.py con Playwright headful + 
+storage_state. 
+Login funciona, extrae 
+movs 
+F3-2 Implementar adapters/scraping_cmr.py. Login funciona, extrae 
+movs 
+F3-3 Sliding window dedup contra emails ya ingestados. Sin duplicados 
+F3-4 Conciliaci├│n matem├ítica contra balance reportado por el portal. Reconcile_log popula 
+F3-5 Workflow semi-asistido: CLI prompt para login interactivo. UX clara para Ricardo 
+ 
+Fase 4 ÔÇö Extras (3ÔÇô5 d├¡as) 
+ID Tarea Definition of Done 
+F4-1 Implementar adapters/ofx_loader.py, csv_loader.py, pdf_loader.py para 
+drop folder. 
+Tests pasan 
+F4-2 Implementar Watcher de drop folder (watchdog). Procesa archivos 
+nuevos 
+autom├íticamente 
+F4-3 Implementar UI Qt: ventana de revisi├│n + quick-add manual. Funcional, integra con 
+staging.db 
+F4-4 Implementar dashboards b├ísicos: resumen mensual por categor├¡a/tag, top 
+comercios. 
+HTML est├íticos 
+F4-5 Integraci├│n con n8n personal para notificaci├│n push (Telegram) cuando hay 
+needs_review. 
+Notificaci├│n funciona 
+ 
+Fase 5 ÔÇö Onboarding Laura (variable) 
+ID Tarea Definition of Done 
+F5-1 Documentar acuerdo de mandato y consentimiento informado. Firmar. PDF firmado 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 36 de 54 
+ID Tarea Definition of Done 
+F5-2 Crear cuentas BE_Laura, CMR_Laura, etc. en MMEX. Setup tags 
+joint/personal. 
+Cuentas creadas 
+F5-3 Activar parsers de email para Laura (su Gmail propio o filtrado en el Gmail 
+compartido). 
+Funcional 
+F5-4 Sesi├│n inicial de scraping headful con Laura para storage_state de sus 
+cuentas. 
+Almacenado en vault 
+F5-5 Refinar reglas de auto-tagging conjunto/personal seg├║n uso real. Reportes mensuales 
+precisos 
+ 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 37 de 54 
+5. Plan de pruebas 
+5.1 Estrategia general 
+Cada Success Criterion del SPEC tiene al menos un test. La cobertura objetivo es ÔëÑ 70% en m├│dulos de 
+parsing/etl, ÔëÑ 90% en writer. 
+5.2 Tests unitarios 
+ÔÇó adapters: fixtures con emails reales anonimizados (RUTs, montos randomizados); cada parser debe 
+extraer la transacci├│n esperada. 
+ÔÇó etl/fitid: el  mismo  input  debe  producir  el  mismo  hash  siempre.  Inputs  ligeramente  distintos 
+(may├║sculas, espacios) deben producir el mismo hash si el merchant_norm es el mismo. 
+ÔÇó etl/fuzzy: casos conocidos ("AMZN MKTP*1234" ÔåÆ Amazon). 
+ÔÇó etl/transfers: par de transacciones que deben matchearse y otro par que no. 
+ÔÇó writer/mmex_sql: INSERT, ROLLBACK en error, idempotencia. 
+5.3 Tests de integraci├│n 
+ÔÇó E2E con MMEX dummy: se crea un finanza_test.mmb vac├¡o, se inyecta lote de 50 transacciones, se 
+verifica conteo y balances. 
+ÔÇó E2E idempotencia: el mismo job corrido dos veces deja el mismo estado en finanza_test.mmb. 
+ÔÇó E2E lock: abrir finanza_test.mmb desde otro proceso (sqlite3 con un BEGIN IMMEDIATE), correr el 
+writer, verificar que difiere correctamente. 
+ÔÇó E2E  reconciliaci├│n: lote  con  balance  que  no  cuadra  debe  terminar  en  "manual_review"  y  NO 
+insertar nada. 
+5.4 Tests manuales (smoke tests) 
+15. Correr   finanzasmmex   run --source=gmail   con   bandeja   real   de   24h.   Verificar:   ┬┐se   crearon 
+transacciones esperadas? ┬┐hay needs_review razonables? 
+16. Importar  el  OFX  generado  en  MMEX  real  (no  test).  Verificar:  ┬┐MMEX  muestra  el  FITID  en  cada 
+registro? ┬┐no hay duplicados con import previos? 
+17. Borrar  accidentalmente  una  transacci├│n  en  MMEX,  correr  el  pipeline  de  nuevo,  verificar:  ┬┐se 
+restaura? 
+18. Cerrar Gmail temporalmente (revocar OAuth), correr el job, verificar: ┬┐error claro? ┬┐no corrompe 
+staging? 
+5.5 Tests de seguridad 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 38 de 54 
+ÔÇó Verificar que no hay credenciales en el repo (git secrets / detect-secrets). 
+ÔÇó Verificar que el storage_state de Playwright contiene cookies cifradas en keyring, no en disco plano. 
+ÔÇó Test  de  exfiltraci├│n:  monitorear  con  Wireshark  mientras  corre  el  pipeline.  Solo  conexiones  a 
+googleapis.com y mercadopago.com. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 39 de 54 
+6. Operaci├│n y mantenimiento 
+6.1 Logging 
+Stack: structlog ÔåÆ archivo rotatorio en logs/. Formato JSON Lines. 
+{"ts":"2026-05-02T10:23:45Z","level":"info", 
+ "job":"gmail_sync","msg":"transactions_processed", 
+ "count":17,"duration_ms":3204} 
+Cada log tiene job, msg, level, ts. Eso permite consumir v├¡a Sentinel si Ricardo decide ingestar a su SIEM 
+personal. 
+6.2 Cu├índo intervenir manualmente 
+Disparador Cadencia 
+esperada 
+Acci├│n 
+needs_review en reporte 
+HTML 
+Diaria Abrir reports/review_YYYY-MM-DD.html, revisar las 
+pendientes, editarlas en MMEX o agregar regla a 
+category_rules. 
+Storage_state de BE/CMR 
+expira 
+~Semanal Correr finanzasmmex login --source=be; completar BE 
+Pass. 
+Gmail token revocado Excepcional Re-autenticar OAuth (vault.refresh_oauth('gmail')). 
+MMEX upgrade de schema Cuando upgrade Probar en finanza_test.mmb antes de producci├│n. 
+Reconciliaci├│n off > 0.1% Excepcional Investigar lote en reconcile_log; probable tx faltante o 
+duplicada. 
+LLM fallback se activa > 
+5%/d├¡a 
+Cuando ocurra Banco cambi├│ plantilla. Actualizar regex en parser 
+correspondiente. 
+ 
+6.3 Procedimiento de restauraci├│n 
+19. Cerrar MMEX si est├í abierto. 
+20. Renombrar finanza.mmb a finanza_corrupted_$(date).mmb. 
+21. Copiar el ├║ltimo backup OK desde backups/finanza_YYYY-MM-DD_post.mmb a finanza.mmb. 
+22. En staging.db, marcar todas las transacciones inserted desde la fecha del backup como pending. 
+23. Correr finanzasmmex replay --since=YYYY-MM-DD para re-aplicar. 
+24. Verificar conteo y balance en MMEX. 
+6.4 Mantenimiento del diccionario de categorizaci├│n 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 40 de 54 
+category_rules es la base m├ís "viva" del sistema. Se crece manualmente en sqlite browser cuando aparece 
+un comercio nuevo. Convenci├│n: 
+ÔÇó Reglas substr van primero (m├ís r├ípidas y precisas). 
+ÔÇó Reglas regex para casos con variaci├│n num├®rica ("AMZN MKTP*\d+"). 
+ÔÇó Reglas fuzzy para errores tipogr├íficos sistem├íticos del banco. 
+ÔÇó priority num├®rica menor = se eval├║a antes. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 41 de 54 
+7. Riesgos y mitigaciones 
+ID Riesgo Probab. Impacto Mitigaci├│n 
+R1 BancoEstado / Falabella 
+detectan automatizaci├│n 
+y bloquean cuenta. 
+Medio Alto Headful + cadencia humana semanal + 
+storage_state de sesi├│n humana. No paralelizar 
+logins. Si pasa: usar export manual desde el portal 
+hasta SFA. 
+R2 Banco cambia plantilla de 
+email; transacciones se 
+pierden silenciosamente. 
+Alto Medio Alert en reporte HTML cuando LLM fallback > 5%. 
+Tests con fixture-suite de plantillas. Monitor diario 
+los primeros 30 d├¡as. 
+R3 Corrupci├│n de 
+finanza.mmb durante 
+INSERT. 
+Bajo Cr├¡tico Backup pre-escritura + ACID + lock detection + 
+idempotencia. Capacidad de replay desde staging. 
+R4 P├®rdida de tokens OAuth 
+por reset de Windows. 
+Bajo Medio keyring respaldado en password manager. 
+Documentar procedimiento de re-autenticaci├│n. 
+R5 Ollama deja de responder 
+(CPU saturada por 
+Defender, etc.). 
+Medio Bajo LLM es fallback, no ruta cr├¡tica. Si falla, transacci├│n 
+va a needs_review y se procesa despu├®s. 
+R6 Mercado Pago revoca app 
+o cambia API. 
+Bajo Bajo App propia sigue siendo de Ricardo; cambios de API 
+requieren actualizar adapter, pero no afectan al 
+resto. 
+R7 MachBCI nunca expone 
+API a personas; se 
+mantiene gap de 
+cobertura. 
+Alto Bajo Aceptado como restricci├│n. Manual + emails de 
+notificaci├│n cubren la mayor├¡a. 
+R8 SFA llega antes de lo 
+previsto y obliga a 
+refactor grande. 
+Medio 
+(positivo) 
+Medio Adapters pluggable. Migrar scraping_be.py ÔåÆ 
+sfa_be.py es semanas de trabajo, no meses. 
+R9 Laura revoca 
+consentimiento. 
+Bajo Medio Acuerdo firmado prev├® revocaci├│n. Borrar 
+storage_state, deshabilitar parsers de Laura, 
+conservar hist├│rico ya importado. 
+R10 El proyecto pierde 
+momentum; queda 
+inconcluso. 
+Medio Medio Roadmap por fases. Fase 1 ya entrega valor (export 
+OFX). Fases 2+ son mejora incremental. 
+R11 Ricardo cambia de laptop 
+o reinstala Windows. 
+Medio Bajo Repo en git remoto privado (GitHub o self-hosted). 
+Tokens en keyring respaldado. Backup mensual a 
+USB cifrado con Restic. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 42 de 54 
+ID Riesgo Probab. Impacto Mitigaci├│n 
+R12 Disputa con BancoEstado 
+sobre acceso 
+automatizado. 
+Bajo Medio Documentar acuerdo familiar, mantener cadencia 
+humana, no paralelizar, no acceder a cuentas de 
+terceros. La defensa es "acceso con credenciales 
+propias". 
+ 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 43 de 54 
+Ap├®ndice A ÔÇö Origen de cada decisi├│n por informe 
+Tabla de trazabilidad: qu├® tom├│ este plan de cada uno de los cuatro informes y qu├® se descart├│. 
+Decisi├│n Origen principal Por qu├® se mantuvo 
+Arquitectura de dos capas (staging.db + 
+finanza.mmb) 
+OpenAI Defendida tambi├®n por Gemini y NotebookLM 
+con ├®nfasis distinto. Es el coraz├│n del plan. 
+FITID sint├®tico en 
+CUSTOMFIELDDATA_V1 
+NotebookLM + 
+Gemini 
+Aprovecha el FITID nativo del schema v21 + el 
+subsistema de campos personalizados. Decisi├│n 
+final consolidada. 
+Sliding window 14 d├¡as para conciliaci├│n 
+emailÔåöextracto 
+Gemini Cr├¡tico para evitar que la misma compra entre 
+dos veces. 
+Regla de oro de conciliaci├│n 
+matem├ítica 
+Gemini B_final = B_initial + ╬ú creditos ÔêÆ ╬ú debitos. 
+Validaci├│n obligatoria pre-write. 
+Tags vs Categor├¡as para gastos 
+conjuntos 
+NotebookLM + 
+OpenAI 
+Mejor pr├íctica para multi-usuario sin duplicar 
+taxonom├¡a. 
+Mercado Pago como ├║nica API leg├¡tima 
+del set 
+Claude Realismo de campo cr├¡tico. Los dem├ís informes 
+asum├¡an APIs disponibles que NO existen. 
+Estado real de BancoEstado (TLS 
+fingerprinting, BE Pass) 
+Claude Informaci├│n de campo que ning├║n otro informe 
+ten├¡a. Determina la decisi├│n headful + semi-
+auto. 
+MachBCI sin API ni web personal Claude Restricci├│n t├®cnica que hay que aceptar; 
+informes anteriores la asum├¡an superable. 
+Marco legal Chile (21.459 / 21.521 SFA / 
+21.719) 
+Claude ├Ünico informe con an├ílisis legal espec├¡fico 
+chileno y cronograma SFA. 
+LLM local Ollama/Qwen como fallback NotebookLM Alineado con stack del laptop de Ricardo 
+(Qwen3 8B en CPU). 
+Modelo can├│nico CanonicalTx con 
+campos de origen y trazabilidad 
+OpenAI Esquema m├ís rico que MMEX, con audit trail. 
+Detecci├│n de transferencias internas Gemini Cr├¡tica para no inflar artificialmente flujo de 
+caja. 
+Custom fields como abstracci├│n nativa 
+MMEX para metadata 
+NotebookLM + 
+Gemini 
+Soluci├│n elegante que no contamina NOTES. 
+Camelot para PDFs con bordes; 
+pdfplumber para coordenadas 
+Gemini + OpenAI Convergencia clara. Plan adopta ambos seg├║n 
+tipo de PDF. 
+BeautifulSoup para HTML embedido en 
+emails 
+Gemini + OpenAI Est├índar del ecosistema. 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 44 de 54 
+Decisi├│n Origen principal Por qu├® se mantuvo 
+Comparativa Fintoc/Floid vs DIY Claude Informa la decisi├│n: $0 (DIY) vs ÔëÑ $260.000/mes 
+(Fintoc). DIY gana por presupuesto. 
+ 
+Decisiones donde el plan diverge de los informes 
+Decisi├│n divergente Informe original 
+suger├¡a 
+Por qu├® este plan elige distinto 
+Empezar con SQL directo a 
+finanza.mmb desde Fase 1 
+Gemini + NotebookLM El plan empieza con OFX export. Raz├│n: el riesgo 
+de corrupci├│n es muy alto y MMEX ya hace 
+dedupe nativa por FITID. SQL directo entra en Fase 
+2 sobre base ya validada. 
+IMAP en lugar de Gmail API OpenAI Gmail API es m├ís estable, ya implementada en 
+proyecto previo. App Passwords se est├ín 
+depreciando. 
+Syncthing para multi-
+dispositivo desde el inicio 
+NotebookLM Diferido a fase futura. Resuelve un problema que 
+Ricardo no tiene a├║n (un solo laptop, MMEX en 
+local). 
+LLM como capa primaria NotebookLM Costo computacional no se justifica. Regex es 
+1000x m├ís r├ípido cuando funciona; LLM solo 
+como fallback. 
+Reverse engineering de 
+MachBCI 
+Gemini impl├¡citamente Viola T&C BCI y queda bajo Ley 21.459 art. 2. 
+Inaceptable. 
+ 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 45 de 54 
+Ap├®ndice B ÔÇö Esquema SQL completo de staging.db 
+Versi├│n inicial. Las migraciones futuras viven en src/finanzasmmex/staging/migrations/. 
+-- staging.db schema v1 
+-- 2026-05-02 
+  
+PRAGMA journal_mode = WAL; 
+PRAGMA foreign_keys = ON; 
+  
+CREATE TABLE schema_version ( 
+    version INTEGER PRIMARY KEY, 
+    applied_at TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+INSERT INTO schema_version (version) VALUES (1); 
+  
+-- ===== canonical_tx ===== 
+CREATE TABLE canonical_tx ( 
+    tx_uid                TEXT PRIMARY KEY, 
+    owner                 TEXT NOT NULL CHECK (owner IN ('ricardo','laura','joint')), 
+    source_type           TEXT NOT NULL, 
+    source_file           TEXT, 
+    source_ref            TEXT, 
+    content_sha256        TEXT NOT NULL, 
+    raw_text              TEXT, 
+    event_date            TEXT, 
+    booking_date          TEXT, 
+    posted_date           TEXT, 
+    amount                REAL NOT NULL CHECK (amount > 0), 
+    currency              TEXT NOT NULL DEFAULT 'CLP', 
+    direction             TEXT NOT NULL CHECK (direction IN ('debit','credit')), 
+    account_alias         TEXT NOT NULL, 
+    card_last4            TEXT, 
+    merchant_raw          TEXT, 
+    merchant_norm         TEXT, 
+    tx_type               TEXT NOT NULL, 
+    category_guess        TEXT, 
+    subcategory_guess     TEXT, 
+    tags_json             TEXT NOT NULL DEFAULT '[]', 
+    fitid_synthetic       TEXT NOT NULL, 
+    parser_name           TEXT NOT NULL, 
+    parser_version        TEXT NOT NULL, 
+    needs_review          INTEGER NOT NULL DEFAULT 0, 
+    review_reason         TEXT, 
+    mmex_account_id       INTEGER, 
+    mmex_tx_id            INTEGER, 
+    mmex_status           TEXT NOT NULL DEFAULT 'pending', 
+    transfer_pair_uid     TEXT, 
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')), 
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')), 
+    FOREIGN KEY (transfer_pair_uid) REFERENCES canonical_tx(tx_uid) 
+); 
+  
+CREATE UNIQUE INDEX uq_canonical_fitid     ON canonical_tx(fitid_synthetic); 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 46 de 54 
+CREATE        INDEX idx_canonical_owner_date ON canonical_tx(owner, posted_date); 
+CREATE        INDEX idx_canonical_status     ON canonical_tx(mmex_status); 
+CREATE        INDEX idx_canonical_match 
+    ON canonical_tx(owner, account_alias, amount, posted_date, merchant_norm); 
+  
+-- ===== raw_artifacts ===== 
+CREATE TABLE raw_artifacts ( 
+    artifact_id      TEXT PRIMARY KEY, 
+    artifact_type    TEXT NOT NULL, 
+    source_ref       TEXT NOT NULL, 
+    content_sha256   TEXT NOT NULL, 
+    payload_blob     BLOB, 
+    payload_text     TEXT, 
+    fetched_at       TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+CREATE UNIQUE INDEX uq_raw_sha ON raw_artifacts(content_sha256); 
+  
+-- ===== category_rules ===== 
+CREATE TABLE category_rules ( 
+    rule_id            INTEGER PRIMARY KEY, 
+    pattern            TEXT NOT NULL, 
+    pattern_type       TEXT NOT NULL CHECK (pattern_type IN ('substr','regex','fuzzy')), 
+    merchant_norm      TEXT NOT NULL, 
+    payee_id_mmex      INTEGER, 
+    category_name      TEXT NOT NULL, 
+    subcategory_name   TEXT, 
+    tags_json          TEXT NOT NULL DEFAULT '[]', 
+    fuzzy_threshold    INTEGER DEFAULT 85, 
+    priority           INTEGER NOT NULL DEFAULT 100, 
+    active             INTEGER NOT NULL DEFAULT 1, 
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+CREATE INDEX idx_rules_active_priority ON category_rules(active, priority); 
+  
+-- ===== merge_log ===== 
+CREATE TABLE merge_log ( 
+    merge_id         INTEGER PRIMARY KEY, 
+    fitid_synthetic  TEXT NOT NULL, 
+    sources_json     TEXT NOT NULL, 
+    chosen_source    TEXT NOT NULL, 
+    merged_at        TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+CREATE INDEX idx_merge_fitid ON merge_log(fitid_synthetic); 
+  
+-- ===== reconcile_log ===== 
+CREATE TABLE reconcile_log ( 
+    reconcile_id     INTEGER PRIMARY KEY, 
+    account_alias    TEXT NOT NULL, 
+    period_start     TEXT NOT NULL, 
+    period_end       TEXT NOT NULL, 
+    balance_initial  REAL NOT NULL, 
+    balance_final    REAL NOT NULL, 
+    sum_credits      REAL NOT NULL, 
+    sum_debits       REAL NOT NULL, 
+    expected_final   REAL NOT NULL, 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 47 de 54 
+    delta            REAL NOT NULL, 
+    status           TEXT NOT NULL CHECK (status IN ('ok','minor','off','manual_review')), 
+    notes            TEXT, 
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')) 
+); 
+  
+-- ===== job_runs ===== 
+CREATE TABLE job_runs ( 
+    run_id           TEXT PRIMARY KEY, 
+    job_name         TEXT NOT NULL, 
+    started_at       TEXT NOT NULL, 
+    finished_at      TEXT, 
+    status           TEXT NOT NULL CHECK (status IN ('running','ok','error','deferred')), 
+    items_processed  INTEGER NOT NULL DEFAULT 0, 
+    items_inserted   INTEGER NOT NULL DEFAULT 0, 
+    items_review     INTEGER NOT NULL DEFAULT 0, 
+    error_message    TEXT, 
+    metadata_json    TEXT 
+); 
+CREATE INDEX idx_job_runs_started ON job_runs(started_at DESC); 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 48 de 54 
+Ap├®ndice C ÔÇö Patrones regex iniciales (BancoEstado) 
+Patrones  de Python regex (re  module)  para los 5 tipos de  notificaci├│n m├ís frecuentes de BancoEstado. 
+Sirven como punto de partida; se ajustar├ín contra fixtures reales en F1-1. 
+Compra con tarjeta de cr├®dito 
+PATTERN_BE_TC_PURCHASE = re.compile( 
+    r'compra\s+por\s+\$\s*(?P<amount>[\d.]+)' 
+    r'.*?en\s+(?P<merchant>.+?)\s+con', 
+    re.IGNORECASE | re.DOTALL 
+) 
+  
+PATTERN_BE_TC_DATE = re.compile( 
+    r'(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+\d{2}:\d{2}', 
+) 
+  
+PATTERN_BE_TC_CARD = re.compile( 
+    r'tarjeta\s+terminada\s+en\s+(?P<last4>\d{4})', 
+    re.IGNORECASE 
+) 
+Transferencia recibida 
+PATTERN_BE_TRANSFER_IN = re.compile( 
+    r'recibiste\s+\$\s*(?P<amount>[\d.]+)' 
+    r'.*?desde\s+(?P<from_name>.+?)\s+(?:RUT|el)', 
+    re.IGNORECASE | re.DOTALL 
+) 
+Transferencia enviada 
+PATTERN_BE_TRANSFER_OUT = re.compile( 
+    r'transferiste\s+\$\s*(?P<amount>[\d.]+)' 
+    r'.*?a\s+(?P<to_name>.+?)(?:\s+RUT|\s+el|\.)', 
+    re.IGNORECASE | re.DOTALL 
+) 
+Pago autom├ítico de servicio 
+PATTERN_BE_BILL = re.compile( 
+    r'pago\s+(?:de\s+cuenta|automatico)\s+' 
+    r'(?:por\s+)?\$\s*(?P<amount>[\d.]+)' 
+    r'.*?(?:a|de)\s+(?P<service>.+?)\s+(?:el|fue)', 
+    re.IGNORECASE | re.DOTALL 
+) 
+Retiro en cajero 
+PATTERN_BE_ATM = re.compile( 
+    r'retiro\s+(?:en\s+cajero\s+)?' 
+    r'por\s+\$\s*(?P<amount>[\d.]+)' 
+    r'.*?(?:cajero|ATM)\s+(?P<location>.+?)(?:\s+el|\.)', 
+    re.IGNORECASE | re.DOTALL 
+) 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 49 de 54 
+Helper de normalizaci├│n de montos chilenos 
+def parse_clp_amount(raw: str) -> Decimal: 
+    """\$1.234.567 o \$1.234.567,89 ÔåÆ Decimal.""" 
+    cleaned = raw.replace('\$', '').replace(' ', '').strip() 
+    if ',' in cleaned: 
+        # formato chileno: punto miles, coma decimales 
+        cleaned = cleaned.replace('.', '').replace(',', '.') 
+    else: 
+        # solo punto miles 
+        cleaned = cleaned.replace('.', '') 
+    return Decimal(cleaned) 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 50 de 54 
+Ap├®ndice D ÔÇö Compliance chileno: detalle adicional 
+D.1 Posici├│n legal de la operaci├│n 
+La operaci├│n FinanzasMMEX se sostiene en cuatro principios legales expl├¡citos: 
+25. Acceso con credenciales propias: el art. 2 de la Ley 21.459 castiga el acceso indebido. El acceso con 
+credenciales propias y voluntarias no es indebido. La defensa jur├¡dica est├í en la voluntariedad. 
+26. Consentimiento expreso de Laura: el acuerdo escrito (Ap├®ndice E) documenta que ella entrega sus 
+credenciales con conocimiento del uso. 
+27. Proporcionalidad  y  m├¡nimo  dato:  el  sistema  solo  lee  movimientos.  No  realiza  transacciones.  No 
+accede a productos de inversi├│n. No comparte con terceros. 
+28. Cumplimiento Ley 21.719 (datos personales): titular del dato es el c├│nyuge. Mantenimiento local + 
+cifrado en reposo + posibilidad de borrado por revocaci├│n = cumplimiento sustantivo. 
+D.2 Riesgo contractual con bancos 
+Los  T&C  de  BancoEstado  y  Banco  Falabella  proh├¡ben "acceso  automatizado  al  servicio".  El  riesgo  no  es 
+penal sino contractual: 
+ÔÇó Suspensi├│n temporal de cuenta (caso m├ís probable). 
+ÔÇó Bloqueo de credenciales digitales con requerimiento de regeneraci├│n presencial. 
+ÔÇó P├®rdida de servicios digitales (BE Pass, transferencias online). 
+Mitigaci├│n operacional: 
+ÔÇó Cadencia humana: Ôëñ 1 sesi├│n scraping por banco por semana. 
+ÔÇó Sin paralelismo: una cuenta a la vez. 
+ÔÇó Sin user-agent custom ni headers spoofeados ÔÇö Playwright headful con Chrome real. 
+ÔÇó Sin operaciones transaccionales: solo lectura de movimientos. 
+ÔÇó Si se detecta CAPTCHA, abortar sesi├│n y notificar. 
+D.3 Cronograma SFA (Sistema de Finanzas Abiertas) 
+La NCG entra en vigencia 4 julio 2026 con implementaci├│n gradual. Los primeros sujetos obligados son los 
+grandes bancos. Cronograma estimado: 
+Fecha estimada Hito 
+jul 2026 NCG vigente. Bancos grandes inician trabajo de implementaci├│n. 
+ene 2027 Primeros endpoints de "datos abiertos" (productos b├ísicos, sin consentimiento). 
+jul 2027 Endpoints con consentimiento del usuario (movimientos, saldos). 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 51 de 54 
+Fecha estimada Hito 
+ene 2028 Bancos minoristas (BancoEstado, Falabella) cubiertos. 
+jul 2028 Cobertura completa ÔÇö punto en que FinanzasMMEX podr├¡a migrar de scraping a API 
+regulada. 
+ 
+Implicancia arquitect├│nica: las fuentes deben ser pluggable. En 2027ÔÇô2028 se reemplaza scraping_be.py 
+por sfa_be.py sin tocar el resto del sistema. Esa pluggabilidad es la raz├│n principal del modelo CanonicalTx 
++ adapter pattern. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 52 de 54 
+Ap├®ndice E ÔÇö Plantilla de acuerdo de mandato 
+Plantilla m├¡nima para el acuerdo entre Ricardo y Laura. Una p├ígina, espa├▒ol neutro, archivada como PDF 
+firmado. 
+ACUERDO DE MANDATO Y CONSENTIMIENTO INFORMADO PARA GESTI├ôN FINANCIERA 
+FAMILIAR 
+Entre  Ricardo  [apellidos],  RUT  [____],  en  adelante  "el  Mandatario",  y  Laura  [apellidos],  RUT  [____],  en 
+adelante "la Mandante", se conviene lo siguiente: 
+PRIMERO ÔÇö Objeto.  La  Mandante  autoriza  al  Mandatario  a  acceder,  exclusivamente  para  fines  de 
+consolidaci├│n  financiera  familiar,  a  los  portales  digitales  y  aplicaciones  m├│viles  de  las  siguientes 
+instituciones donde la Mandante mantiene productos: Banco Estado de Chile, Banco Falabella / Tarjeta 
+CMR, y cualquier otra que ambas partes acuerden por escrito en el futuro. 
+SEGUNDO ÔÇö Alcance. El acceso se limita a operaciones de SOLO LECTURA: visualizaci├│n de movimientos, 
+saldos  y  estados  de  cuenta.  Queda  EXPRESAMENTE  PROHIBIDO  al  Mandatario  realizar  transferencias, 
+pagos, contrataciones de productos, modificaciones de claves, o cualquier acci├│n transaccional. 
+TERCERO ÔÇö Tratamiento de datos. La informaci├│n obtenida se almacena exclusivamente en la PC personal 
+del Mandatario, con cifrado en reposo. No se comparte con terceros, no se sube a servicios en la nube de 
+proveedores  externos,  y  se  utiliza  ├║nicamente  como insumo  de  la  herramienta  de  gesti├│n  financiera 
+familiar Money Manager Ex. 
+CUARTO ÔÇö Revocaci├│n.  La  Mandante  puede  revocar  este  mandato  en  cualquier  momento  mediante 
+comunicaci├│n escrita al Mandatario. La revocaci├│n obliga al Mandatario a: (a) cesar inmediatamente todo 
+acceso, (b) eliminar las credenciales almacenadas, (c) borrar los datos derivados que la Mandante solicite 
+por escrito. 
+QUINTO ÔÇö Vigencia. Este acuerdo rige desde la fecha de firma y mientras subsista la voluntad de ambas 
+partes. 
+Firmado en [ciudad], el [fecha]. 
+ 
+___________________________                              ___________________________ 
+Ricardo [apellidos]                                                              Laura [apellidos] 
+RUT [____]                                                                          RUT [____] 
+ 
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 53 de 54 
+Disclaimer no legal 
+Esta plantilla es un punto de partida documental, no un instrumento legal validado. Para uso formal en 
+disputas, conviene revisarla con un abogado chileno familiarizado con la Ley 21.719 y la Ley 21.459. Para 
+uso  interno  familiar  (que  es  el  caso  aqu├¡),  tiene  valor  probatorio  razonable  como  evidencia  de 
+consentimiento expreso. 
+  
+
+FinanzasMMEX ÔÇö Plan de arquitectura v1.0 
+P├ígina 54 de 54 
+Cierre y siguientes pasos 
+Este documento es la "single source of truth" del proyecto FinanzasMMEX. Cualquier divergencia entre el 
+c├│digo y este plan debe resolverse aqu├¡ (Phase 6 del spec-driven-workflow), no en la implementaci├│n. 
+Pr├│ximos pasos sugeridos 
+29. Revisar este plan (Ricardo). Aprobar o pedir ajustes. 
+30. Iniciar Fase 0: setup de repo, OAuth Gmail, OAuth Mercado Pago, Ollama. 
+31. Comenzar  Fase  1  con  un  solo  banco  (BancoEstado  v├¡a  email)  hasta  tener  un  loop  end-to-end 
+funcionando: Gmail ÔåÆ staging.db ÔåÆ OFX ÔåÆ import a finanza.mmb. 
+32. Ejecutar  1  semana  de  uso  real  en  "shadow  mode"  (export  OFX,  importaci├│n  manual  a  un 
+finanza_test.mmb separado) antes de tocar el archivo productivo. 
+33. Una vez validado, migrar finanza.mmb productivo y activar Task Scheduler. 
+Contacto y mantenimiento del documento 
+Este plan es un documento vivo. Cuando algo cambie sustancialmente (banco modifica plantilla, SFA llega 
+antes, Laura entra antes de Fase 5), se actualiza la secci├│n correspondiente y se incrementa la versi├│n en 
+la portada. 
+ 
+ÔÇö Fin del plan ÔÇö 
