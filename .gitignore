@@ -37,6 +37,8 @@ htmlcov/
 
 # Project Specific
 staging.db
+*.db-shm
+*.db-wal
 *.mmb
 *.emb
 logs/

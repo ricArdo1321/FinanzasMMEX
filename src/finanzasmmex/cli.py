@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any, NoReturn
 
+from .orchestrator.jobs import run_gmail_bancoestado_to_ofx
 from .staging.repo import StagingRepo
 
 VALID_EXIT_CODES = {0, 2, 3, 4, 5}
@@ -99,6 +100,29 @@ def main() -> None:
         default="ofx",
         help="Writer mode",
     )
+    run_parser.add_argument(
+        "--input",
+        help=(
+            "Path to a BancoEstado email file or directory "
+            "for offline Gmail ingestion"
+        ),
+    )
+    run_parser.add_argument("--db", default="staging.db", help="Path to staging.db")
+    run_parser.add_argument(
+        "--schema",
+        default="src/finanzasmmex/staging/schema.sql",
+        help="Path to schema.sql",
+    )
+    run_parser.add_argument(
+        "--ofx-output",
+        default="reports/finanzasmmex.ofx",
+        help="Path to write the OFX file",
+    )
+    run_parser.add_argument(
+        "--report-output",
+        default="reports/review.html",
+        help="Path to write the HTML review report",
+    )
 
     help_parsers = {"init": init_parser, "run": run_parser}
     if argv in (["-h"], ["--help"]):
@@ -133,15 +157,78 @@ def main() -> None:
                 },
             )
         elif args.command == "run":
-            # To be implemented in Phase 1
+            if args.writer == "sql":
+                _emit(
+                    False,
+                    errors=[
+                        {
+                            "code": "VALIDATION_ERROR",
+                            "message": "SQL writer is not available until Phase 2",
+                            "details": {"writer": args.writer},
+                        }
+                    ],
+                    exit_code=2,
+                )
+            if args.source != "gmail":
+                _emit(
+                    False,
+                    errors=[
+                        {
+                            "code": "VALIDATION_ERROR",
+                            "message": "Only gmail source is implemented in this cut",
+                            "details": {"source": args.source},
+                        }
+                    ],
+                    exit_code=2,
+                )
+            if not args.input:
+                _emit(
+                    False,
+                    errors=[
+                        {
+                            "code": "CREDENTIALS_REQUIRED",
+                            "message": (
+                                "Gmail OAuth credentials are not configured; "
+                                "use --input for offline ingestion"
+                            ),
+                            "details": {
+                                "source": args.source,
+                                "offline_flag": "--input",
+                                "login_command": "finanzasmmex login --source gmail",
+                            },
+                        }
+                    ],
+                    exit_code=3,
+                )
+
+            result = run_gmail_bancoestado_to_ofx(
+                input_path=args.input,
+                db_path=args.db,
+                schema_path=args.schema,
+                ofx_output_path=args.ofx_output,
+                report_output_path=args.report_output,
+            )
             _emit(
                 True,
                 data={
-                    "message": f"Stub: Ingestion for {args.source} executed",
+                    "message": "BancoEstado Gmail ingestion completed",
                     "source": args.source,
                     "writer": args.writer,
+                    **result.as_dict(),
                 },
             )
+    except ValueError as e:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "VALIDATION_ERROR",
+                    "message": str(e),
+                    "details": {"exception_type": type(e).__name__},
+                }
+            ],
+            exit_code=2,
+        )
     except Exception as e:
         _emit(
             False,

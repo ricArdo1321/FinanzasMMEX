@@ -3,7 +3,7 @@ import sqlite3
 from contextlib import closing
 from datetime import date
 from decimal import Decimal
-from typing import List
+from typing import Iterable, List
 
 from ..models import CanonicalTx
 
@@ -84,6 +84,18 @@ class StagingRepo:
         with closing(self._get_connection()) as conn:
             rows = conn.execute(sql).fetchall()
             return [self._row_to_tx(row) for row in rows]
+
+    def has_reconcile_off(self, account_aliases: Iterable[str]) -> bool:
+        aliases = sorted(set(account_aliases))
+        if not aliases:
+            return False
+        placeholders = ",".join("?" for _ in aliases)
+        sql = (
+            "SELECT 1 FROM reconcile_log "
+            f"WHERE account_alias IN ({placeholders}) AND status = 'off' LIMIT 1"
+        )
+        with closing(self._get_connection()) as conn:
+            return conn.execute(sql, aliases).fetchone() is not None
 
     def _row_to_tx(self, row: sqlite3.Row) -> CanonicalTx:
         return CanonicalTx(

@@ -1,6 +1,9 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -57,17 +60,45 @@ def test_invalid_argument_returns_json_validation_error() -> None:
     assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
 
 
-def test_run_success_returns_full_envelope() -> None:
-    result = run_cli("run", "--source", "gmail", "--writer", "ofx")
+def test_run_success_returns_full_envelope(tmp_path) -> None:
+    result = run_cli(
+        "run",
+        "--source",
+        "gmail",
+        "--writer",
+        "ofx",
+        "--input",
+        str(ROOT / "tests" / "fixtures" / "gmail"),
+        "--db",
+        str(tmp_path / "staging.db"),
+        "--ofx-output",
+        str(tmp_path / "bancoestado.ofx"),
+        "--report-output",
+        str(tmp_path / "review.html"),
+    )
 
     payload = parse_stdout(result)
     assert result.returncode == 0
     assert payload["ok"] is True
     assert payload["data"]["source"] == "gmail"
     assert payload["data"]["writer"] == "ofx"
+    assert payload["data"]["items_processed"] == 1
+    assert payload["data"]["items_review"] == 1
+    assert Path(payload["data"]["ofx_path"]).is_file()
+    assert Path(payload["data"]["report_path"]).is_file()
     assert payload["errors"] == []
     assert payload["warnings"] == []
     assert payload["run_id"]
+
+
+def test_run_without_input_returns_credentials_error() -> None:
+    result = run_cli("run", "--source", "gmail", "--writer", "ofx")
+
+    payload = parse_stdout(result)
+    assert result.returncode == 3
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+    assert payload["errors"][0]["details"]["offline_flag"] == "--input"
 
 
 def test_init_missing_schema_returns_validation_error(tmp_path) -> None:
