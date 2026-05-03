@@ -44,6 +44,7 @@ reports/*.html
 secrets/*.json
 !secrets/placeholder.json
 .env
+temp_pdf_read/
 
 # OS
 .DS_Store

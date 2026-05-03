@@ -9,7 +9,7 @@ FinanzasMMEX — local-first desktop app to consolidate Chilean banking transact
 ## Stack
 
 - **Python 3.11+** engine: ingestion, ETL, staging SQLite, dedup, scraping, OFX/SQL writers, jobs. Source: `src/finanzasmmex/`.
-- **C# WPF .NET 10** desktop UI for review queue + quick-add. Source: `desktop/FinanzasMMEX.App/`. Invokes Python CLI via subprocess + JSON contract. **WPF never writes `staging.db` or `finanza.mmb` directly** — Python is sole writer.
+- **C# WPF .NET 8** desktop UI for review queue + quick-add. Source: `desktop/FinanzasMMEX.App/`. Invokes Python CLI via subprocess + JSON contract. **WPF never writes `staging.db` or `finanza.mmb` directly** — Python is sole writer.
 - **SQLite** staging DB (`staging.db`, WAL mode) → MMEX `finanza.mmb` (later).
 - Secrets via `keyring` → Windows Credential Manager only. Never repo/logs/files.
 

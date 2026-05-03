@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from datetime import date
 from decimal import Decimal
 from typing import List
@@ -13,25 +14,31 @@ class StagingRepo:
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.row_factory = sqlite3.Row
         return conn
 
     def init_db(self, schema_path: str) -> None:
-        with open(schema_path, "r") as f:
+        with open(schema_path, "r", encoding="utf-8") as f:
             schema = f.read()
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             conn.executescript(schema)
+            conn.commit()
 
     def upsert_tx(self, tx: CanonicalTx) -> None:
         sql = """
         INSERT INTO canonical_tx (
-            tx_uid, owner, source_type, source_file, source_ref, content_sha256, raw_text,
+            tx_uid, owner, source_type, source_file, source_ref,
+            content_sha256, raw_text,
             event_date, booking_date, posted_date, amount, currency, direction,
             account_alias, card_last4, merchant_raw, merchant_norm, tx_type,
             category_guess, subcategory_guess, tags_json, fitid_synthetic,
             parser_name, parser_version, needs_review, review_reason,
             mmex_account_id, mmex_tx_id, mmex_status, transfer_pair_uid
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         ON CONFLICT(fitid_synthetic) DO UPDATE SET
             mmex_status = excluded.mmex_status,
             updated_at = datetime('now')
@@ -68,12 +75,13 @@ class StagingRepo:
             tx.mmex_status,
             tx.transfer_pair_uid,
         )
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             conn.execute(sql, params)
+            conn.commit()
 
     def get_pending_txs(self) -> List[CanonicalTx]:
         sql = "SELECT * FROM canonical_tx WHERE mmex_status = 'pending'"
-        with self._get_connection() as conn:
+        with closing(self._get_connection()) as conn:
             rows = conn.execute(sql).fetchall()
             return [self._row_to_tx(row) for row in rows]
 
@@ -86,23 +94,23 @@ class StagingRepo:
             source_ref=row["source_ref"],
             content_sha256=row["content_sha256"],
             raw_text=row["raw_text"],
-            event_date=date.fromisoformat(row["event_date"])
-            if row["event_date"]
-            else None,
-            booking_date=date.fromisoformat(row["booking_date"])
-            if row["booking_date"]
-            else None,
-            posted_date=date.fromisoformat(row["posted_date"])
-            if row["posted_date"]
-            else None,
+            event_date=(
+                date.fromisoformat(row["event_date"]) if row["event_date"] else None
+            ),
+            booking_date=(
+                date.fromisoformat(row["booking_date"]) if row["booking_date"] else None
+            ),
+            posted_date=(
+                date.fromisoformat(row["posted_date"]) if row["posted_date"] else None
+            ),
             amount=Decimal(str(row["amount"])),
             currency=row["currency"],
-            direction=row["direction"],  # type: ignore
+            direction=row["direction"],
             account_alias=row["account_alias"],
             card_last4=row["card_last4"],
             merchant_raw=row["merchant_raw"],
             merchant_norm=row["merchant_norm"],
-            tx_type=row["tx_type"],  # type: ignore
+            tx_type=row["tx_type"],
             category_guess=row["category_guess"],
             subcategory_guess=row["subcategory_guess"],
             tags=json.loads(row["tags_json"]),
@@ -113,6 +121,6 @@ class StagingRepo:
             review_reason=row["review_reason"],
             mmex_account_id=row["mmex_account_id"],
             mmex_tx_id=row["mmex_tx_id"],
-            mmex_status=row["mmex_status"],  # type: ignore
+            mmex_status=row["mmex_status"],
             transfer_pair_uid=row["transfer_pair_uid"],
         )

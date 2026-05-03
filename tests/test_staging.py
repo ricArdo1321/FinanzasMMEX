@@ -71,3 +71,20 @@ def test_upsert_idempotency(repo):
     with repo._get_connection() as conn:
         count = conn.execute("SELECT COUNT(*) FROM canonical_tx").fetchone()[0]
         assert count == 1
+
+
+def test_foreign_keys_enabled_for_repo_connections(repo):
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash123",
+        amount=Decimal("100.50"),
+        account_alias="BE_Main",
+        tx_type="purchase",
+        parser_name="test_parser",
+        fitid_synthetic="fitid_1",
+        transfer_pair_uid="missing-parent",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.upsert_tx(tx)

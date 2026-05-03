@@ -1,0 +1,10 @@
+From: avisos@example.com
+To: user-01@example.com
+Subject: Aviso de compra BancoEstado
+Date: Tue, 02 May 2026 10:15:00 -0400
+
+Hola Persona-A:
+
+Se ha realizado una compra por $12.340 en COMERCIO DEMO con cargo a la cuenta ****1234.
+Fecha de la operacion: 2026-05-02.
+Codigo de autorizacion: TEST-A1.
