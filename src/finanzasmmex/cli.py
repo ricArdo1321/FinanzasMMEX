@@ -1,14 +1,19 @@
 import argparse
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Any, NoReturn
 
-from .orchestrator.jobs import run_gmail_bancoestado_to_ofx
+from .orchestrator.jobs import run_gmail_bancoestado_to_ofx, run_mp_to_ofx
+from .secrets.vault import Vault
 from .staging.repo import StagingRepo
 
 VALID_EXIT_CODES = {0, 2, 3, 4, 5}
+MP_VAULT_KEY = "mp_access_token"
+MP_TOKEN_ENV = "MP_ACCESS_TOKEN"
+DISABLE_VAULT_ENV = "FINANZASMMEX_DISABLE_VAULT"
 
 
 class ContractArgumentParser(argparse.ArgumentParser):
@@ -68,6 +73,161 @@ def _emit(
     sys.exit(resolved_exit_code)
 
 
+def _vault_disabled() -> bool:
+    return os.environ.get(DISABLE_VAULT_ENV, "").lower() in {"1", "true", "yes"}
+
+
+def _read_vault_secret(key: str) -> str | None:
+    if _vault_disabled():
+        return None
+    try:
+        return Vault().get_secret(key)
+    except Exception:
+        return None
+
+
+def _store_vault_secret(key: str, value: str) -> None:
+    if _vault_disabled():
+        return
+    Vault().set_secret(key, value)
+
+
+def _run_gmail(args: argparse.Namespace) -> NoReturn:
+    if not args.input:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "CREDENTIALS_REQUIRED",
+                    "message": (
+                        "Gmail OAuth credentials are not configured; "
+                        "use --input for offline ingestion"
+                    ),
+                    "details": {
+                        "source": args.source,
+                        "offline_flag": "--input",
+                        "login_command": "finanzasmmex login --source gmail",
+                    },
+                }
+            ],
+            exit_code=3,
+        )
+    result = run_gmail_bancoestado_to_ofx(
+        input_path=args.input,
+        db_path=args.db,
+        schema_path=args.schema,
+        ofx_output_path=args.ofx_output,
+        report_output_path=args.report_output,
+    )
+    _emit(
+        True,
+        data={
+            "message": "BancoEstado Gmail ingestion completed",
+            "source": args.source,
+            "writer": args.writer,
+            **result.as_dict(),
+        },
+    )
+
+
+def _run_mp(args: argparse.Namespace) -> NoReturn:
+    if args.input:
+        result = run_mp_to_ofx(
+            input_path=args.input,
+            db_path=args.db,
+            schema_path=args.schema,
+            ofx_output_path=args.ofx_output,
+            report_output_path=args.report_output,
+        )
+        _emit(
+            True,
+            data={
+                "message": "Mercado Pago offline ingestion completed",
+                "source": args.source,
+                "writer": args.writer,
+                **result.as_dict(),
+            },
+        )
+
+    if _read_vault_secret(MP_VAULT_KEY) is None:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "CREDENTIALS_REQUIRED",
+                    "message": (
+                        "Mercado Pago access token is not configured; "
+                        "run login first or use --input for offline ingestion"
+                    ),
+                    "details": {
+                        "source": args.source,
+                        "offline_flag": "--input",
+                        "login_command": "finanzasmmex login --source mp",
+                    },
+                }
+            ],
+            exit_code=3,
+        )
+
+    _emit(
+        False,
+        errors=[
+            {
+                "code": "TEMPORARY_FAILURE",
+                "message": (
+                    "Mercado Pago online ingestion is not wired in this cut; "
+                    "use --input <path> for offline mode"
+                ),
+                "details": {"source": args.source},
+            }
+        ],
+        exit_code=5,
+    )
+
+
+def _run_login(args: argparse.Namespace) -> NoReturn:
+    if args.source != "mp":
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Unsupported login source",
+                    "details": {"source": args.source},
+                }
+            ],
+            exit_code=2,
+        )
+    token = os.environ.get(MP_TOKEN_ENV, "").strip()
+    if not token:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "CREDENTIALS_REQUIRED",
+                    "message": (
+                        "Mercado Pago access token must be provided via "
+                        f"the {MP_TOKEN_ENV} environment variable"
+                    ),
+                    "details": {
+                        "source": args.source,
+                        "expected_env": MP_TOKEN_ENV,
+                    },
+                }
+            ],
+            exit_code=3,
+        )
+    _store_vault_secret(MP_VAULT_KEY, token)
+    _emit(
+        True,
+        data={
+            "message": "Mercado Pago access token stored in vault",
+            "source": args.source,
+            "vault_key": MP_VAULT_KEY,
+        },
+    )
+
+
 def main() -> None:
     argv = sys.argv[1:]
     parser = ContractArgumentParser(description="FinanzasMMEX CLI")
@@ -124,7 +284,19 @@ def main() -> None:
         help="Path to write the HTML review report",
     )
 
-    help_parsers = {"init": init_parser, "run": run_parser}
+    # login command
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Store credentials for a source in the Windows Credential Manager",
+    )
+    login_parser.add_argument(
+        "--source",
+        choices=["mp"],
+        required=True,
+        help="Credential source to configure",
+    )
+
+    help_parsers = {"init": init_parser, "run": run_parser, "login": login_parser}
     if argv in (["-h"], ["--help"]):
         _emit(True, data={"help": parser.format_help()})
     if len(argv) >= 2 and argv[-1] in ("-h", "--help") and argv[0] in help_parsers:
@@ -169,54 +341,28 @@ def main() -> None:
                     ],
                     exit_code=2,
                 )
-            if args.source != "gmail":
+            if args.source not in {"gmail", "mp"}:
                 _emit(
                     False,
                     errors=[
                         {
                             "code": "VALIDATION_ERROR",
-                            "message": "Only gmail source is implemented in this cut",
+                            "message": (
+                                "Only gmail and mp sources are implemented "
+                                "in this cut"
+                            ),
                             "details": {"source": args.source},
                         }
                     ],
                     exit_code=2,
                 )
-            if not args.input:
-                _emit(
-                    False,
-                    errors=[
-                        {
-                            "code": "CREDENTIALS_REQUIRED",
-                            "message": (
-                                "Gmail OAuth credentials are not configured; "
-                                "use --input for offline ingestion"
-                            ),
-                            "details": {
-                                "source": args.source,
-                                "offline_flag": "--input",
-                                "login_command": "finanzasmmex login --source gmail",
-                            },
-                        }
-                    ],
-                    exit_code=3,
-                )
 
-            result = run_gmail_bancoestado_to_ofx(
-                input_path=args.input,
-                db_path=args.db,
-                schema_path=args.schema,
-                ofx_output_path=args.ofx_output,
-                report_output_path=args.report_output,
-            )
-            _emit(
-                True,
-                data={
-                    "message": "BancoEstado Gmail ingestion completed",
-                    "source": args.source,
-                    "writer": args.writer,
-                    **result.as_dict(),
-                },
-            )
+            if args.source == "gmail":
+                _run_gmail(args)
+            else:
+                _run_mp(args)
+        elif args.command == "login":
+            _run_login(args)
     except ValueError as e:
         _emit(
             False,

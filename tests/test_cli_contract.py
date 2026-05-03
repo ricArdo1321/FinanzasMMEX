@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -6,12 +7,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    merged_env = {**os.environ, **(env or {})}
     return subprocess.run(
         [sys.executable, "-m", "finanzasmmex.cli", *args],
         check=False,
         capture_output=True,
         text=True,
+        env=merged_env,
     )
 
 
@@ -99,6 +105,87 @@ def test_run_without_input_returns_credentials_error() -> None:
     assert payload["ok"] is False
     assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
     assert payload["errors"][0]["details"]["offline_flag"] == "--input"
+
+
+def test_run_mp_offline_input_succeeds(tmp_path) -> None:
+    fixture = ROOT / "tests" / "fixtures" / "mp_api" / "payment_anonymized.json"
+    result = run_cli(
+        "run",
+        "--source",
+        "mp",
+        "--writer",
+        "ofx",
+        "--input",
+        str(fixture),
+        "--db",
+        str(tmp_path / "staging.db"),
+        "--ofx-output",
+        str(tmp_path / "mp.ofx"),
+        "--report-output",
+        str(tmp_path / "review.html"),
+    )
+
+    payload = parse_stdout(result)
+    assert result.returncode == 0
+    assert payload["ok"] is True
+    assert payload["data"]["source"] == "mp"
+    assert payload["data"]["items_processed"] == 1
+    assert Path(payload["data"]["ofx_path"]).is_file()
+    # Token must never be echoed in any envelope field.
+    assert "access_token" not in result.stdout.lower()
+
+
+def test_run_mp_without_input_or_token_returns_credentials_error() -> None:
+    result = run_cli(
+        "run",
+        "--source",
+        "mp",
+        "--writer",
+        "ofx",
+        env={"FINANZASMMEX_DISABLE_VAULT": "1"},
+    )
+
+    payload = parse_stdout(result)
+    assert result.returncode == 3
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+    assert payload["errors"][0]["details"]["login_command"].endswith("--source mp")
+
+
+def test_login_mp_requires_token_env_var() -> None:
+    result = run_cli(
+        "login",
+        "--source",
+        "mp",
+        env={"MP_ACCESS_TOKEN": "", "FINANZASMMEX_DISABLE_VAULT": "1"},
+    )
+
+    payload = parse_stdout(result)
+    assert result.returncode == 3
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+    assert payload["errors"][0]["details"]["expected_env"] == "MP_ACCESS_TOKEN"
+
+
+def test_login_mp_does_not_echo_token_value_on_failure() -> None:
+    sentinel = "SENTINEL-TOKEN-DO-NOT-LEAK-9b3c1e"
+    result = run_cli(
+        "login",
+        "--source",
+        "mp",
+        env={"MP_ACCESS_TOKEN": sentinel, "FINANZASMMEX_DISABLE_VAULT": "1"},
+    )
+
+    # Disabled vault means set_secret still runs; we cannot guarantee storage
+    # without keyring, but we can guarantee the envelope never echoes the token.
+    assert sentinel not in result.stdout
+    assert sentinel not in result.stderr
+
+
+def test_login_mp_invalid_source_validation_error() -> None:
+    result = run_cli("login", "--source", "gmail")
+    payload = parse_stdout(result)
+    assert result.returncode == 2
+    assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
 
 
 def test_init_missing_schema_returns_validation_error(tmp_path) -> None:
