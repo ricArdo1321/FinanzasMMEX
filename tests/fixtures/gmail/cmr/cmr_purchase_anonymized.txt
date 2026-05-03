@@ -1,0 +1,11 @@
+From: notificaciones@example-cmr.cl
+To: user-01@example.com
+Subject: Compra realizada con tu Tarjeta CMR
+Date: Sat, 02 May 2026 14:25:00 -0400
+
+Hola Persona-A:
+
+Te informamos que se realizo una compra por CLP $25.990 en TIENDA DEMO el 02/05/2026 14:25.
+Tarjeta CMR terminada en 5678.
+Cuotas: 1 sin interes.
+Numero de operacion: OP-998877.

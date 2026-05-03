@@ -1,0 +1,11 @@
+From: notificaciones@example-mach.cl
+To: user-01@example.com
+Subject: Realizaste una compra con Mach
+Date: Fri, 01 May 2026 09:15:00 -0400
+
+Hola Persona-A,
+
+Pagaste CLP $7.500 en COMERCIO MACH DEMO.
+Fecha: 01/05/2026 09:15.
+Tarjeta Mach **** 4242.
+ID transaccion: MCH-9988.
