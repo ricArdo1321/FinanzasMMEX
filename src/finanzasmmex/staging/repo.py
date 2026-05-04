@@ -85,6 +85,101 @@ class StagingRepo:
             rows = conn.execute(sql).fetchall()
             return [self._row_to_tx(row) for row in rows]
 
+    def list_txs(
+        self,
+        *,
+        owner: str | None = None,
+        account_alias: str | None = None,
+        mmex_status: str | None = None,
+        needs_review_only: bool = False,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 200,
+    ) -> List[CanonicalTx]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if owner is not None:
+            clauses.append("owner = ?")
+            params.append(owner)
+        if account_alias is not None:
+            clauses.append("account_alias = ?")
+            params.append(account_alias)
+        if mmex_status is not None:
+            clauses.append("mmex_status = ?")
+            params.append(mmex_status)
+        if needs_review_only:
+            clauses.append("needs_review = 1")
+        if since is not None:
+            clauses.append("COALESCE(posted_date, booking_date, event_date) >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("COALESCE(posted_date, booking_date, event_date) <= ?")
+            params.append(until)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            "SELECT * FROM canonical_tx "
+            f"{where} "
+            "ORDER BY COALESCE(posted_date, booking_date, event_date) DESC, "
+            "tx_uid ASC "
+            "LIMIT ?"
+        )
+        params.append(int(limit))
+
+        with closing(self._get_connection()) as conn:
+            rows = conn.execute(sql, params).fetchall()
+            return [self._row_to_tx(row) for row in rows]
+
+    def get_tx(self, tx_uid: str) -> CanonicalTx | None:
+        sql = "SELECT * FROM canonical_tx WHERE tx_uid = ?"
+        with closing(self._get_connection()) as conn:
+            row = conn.execute(sql, (tx_uid,)).fetchone()
+            return self._row_to_tx(row) if row else None
+
+    _UPDATABLE_FIELDS: dict[str, str] = {
+        "owner": "owner",
+        "category_guess": "category_guess",
+        "subcategory_guess": "subcategory_guess",
+        "merchant_norm": "merchant_norm",
+        "tags_json": "tags_json",
+        "needs_review": "needs_review",
+        "review_reason": "review_reason",
+    }
+
+    def update_tx_fields(self, tx_uid: str, fields: dict[str, object]) -> bool:
+        if not fields:
+            return False
+        unknown = set(fields) - set(self._UPDATABLE_FIELDS)
+        if unknown:
+            raise ValueError(f"Unsupported review fields: {sorted(unknown)}")
+
+        assignments = ", ".join(f"{col} = ?" for col in fields)
+        params = list(fields.values()) + [tx_uid]
+        sql = (
+            f"UPDATE canonical_tx SET {assignments}, "
+            "updated_at = datetime('now') WHERE tx_uid = ?"
+        )
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def update_mmex_status(self, tx_uid: str, status: str) -> bool:
+        sql = (
+            "UPDATE canonical_tx SET mmex_status = ?, updated_at = datetime('now') "
+            "WHERE tx_uid = ?"
+        )
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(sql, (status, tx_uid))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_tx_by_fitid(self, fitid_synthetic: str) -> CanonicalTx | None:
+        sql = "SELECT * FROM canonical_tx WHERE fitid_synthetic = ?"
+        with closing(self._get_connection()) as conn:
+            row = conn.execute(sql, (fitid_synthetic,)).fetchone()
+            return self._row_to_tx(row) if row else None
+
     def has_reconcile_off(self, account_aliases: Iterable[str]) -> bool:
         aliases = sorted(set(account_aliases))
         if not aliases:

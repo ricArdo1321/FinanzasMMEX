@@ -1,5 +1,7 @@
 <Solution>
   <Folder Name="/desktop/">
+    <Project Path="desktop/FinanzasMMEX.Core/FinanzasMMEX.Core.csproj" />
     <Project Path="desktop/FinanzasMMEX.App/FinanzasMMEX.App.csproj" />
+    <Project Path="desktop/FinanzasMMEX.App.Tests/FinanzasMMEX.App.Tests.csproj" />
   </Folder>
 </Solution>
