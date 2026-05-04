@@ -495,13 +495,30 @@ def _ensure_sync_hash_unique_index(
     duplicate sync_hash under our field cannot survive a subsequent
     INSERT. Other CustomFields (where duplicate CONTENT is legitimate)
     are unaffected by the partial predicate.
+
+    The index name is suffixed with the resolved field_id so that if MMEX
+    deletes and recreates the sync_hash CustomField with a new id, the
+    new run creates a fresh index for the new id. We also drop any stale
+    indexes that point to a different field_id to avoid silent dormancy.
     """
     field_col, _ref_col, content_col, _id_col = _sync_data_columns(conn)
-    # Partial-index WHERE must be a literal expression; field_id is bound
-    # to a freshly-resolved trusted integer so no SQL-injection risk.
+    expected_name = f"uq_finanzasmmex_sync_hash_{int(field_id)}"
+
+    # Drop stale per-field indexes whose suffix no longer matches the
+    # current sync_hash field id (e.g. MMEX user deleted+recreated it).
+    stale = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' "
+        "AND name LIKE 'uq_finanzasmmex_sync_hash%' AND name != ?",
+        (expected_name,),
+    ).fetchall()
+    for row in stale:
+        conn.execute(f"DROP INDEX IF EXISTS {row[0]}")
+
+    # Field id is a trusted integer (resolved from sqlite_master + an int
+    # cast); no SQL-injection risk in the literal partial-index predicate.
     conn.execute(
         f"""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_finanzasmmex_sync_hash
+        CREATE UNIQUE INDEX IF NOT EXISTS {expected_name}
         ON CUSTOMFIELDDATA_V1 ({field_col}, {content_col})
         WHERE {field_col} = {int(field_id)}
         """
@@ -591,28 +608,49 @@ def _resolve_account_id(
         return int(rows[0][id_col])
     if len(rows) > 1:
         raise MmexMappingError(
-            f"MMEX account ambiguous for alias '{account_alias}': "
-            f"{len(rows)} rows match"
+            f"MMEX account ambiguous for alias '{_mask_alias(account_alias)}':"
+            f" {len(rows)} rows match"
         )
 
     if card_last4:
-        suffix = f"%_{card_last4}"
+        # Escape SQL LIKE wildcards: '_' is a single-char wildcard so a naive
+        # `LIKE '%_1234'` would also match e.g. 'Productive_finanza_X1234',
+        # silently routing a tx to the wrong owner. Force literal '_'.
+        suffix = f"%\\_{card_last4}"
         rows = conn.execute(
-            f"SELECT {id_col} FROM ACCOUNTLIST_V1 WHERE {name_col} LIKE ?",
+            f"SELECT {id_col} FROM ACCOUNTLIST_V1 "
+            f"WHERE {name_col} LIKE ? ESCAPE '\\'",
             (suffix,),
         ).fetchall()
         if len(rows) == 1:
             return int(rows[0][id_col])
         if len(rows) > 1:
             raise MmexMappingError(
-                f"MMEX account ambiguous by last4 '{card_last4}': "
-                f"{len(rows)} rows match"
+                f"MMEX account ambiguous by last4 '{_mask_last4(card_last4)}':"
+                f" {len(rows)} rows match"
             )
 
     raise MmexMappingError(
-        f"MMEX account not found for alias '{account_alias}'"
-        + (f" or card_last4 '{card_last4}'" if card_last4 else "")
+        f"MMEX account not found for alias '{_mask_alias(account_alias)}'"
+        + (f" or card_last4 '{_mask_last4(card_last4)}'" if card_last4 else "")
     )
+
+
+def _mask_alias(alias: str) -> str:
+    """Strip identifying suffixes from an alias before raising it in errors."""
+    if not alias:
+        return ""
+    parts = alias.split("_")
+    if len(parts) <= 1:
+        return f"{alias[:3]}***" if len(alias) > 3 else "***"
+    head = parts[0]
+    return f"{head}_***"
+
+
+def _mask_last4(last4: str | None) -> str:
+    if not last4:
+        return "****"
+    return "**" + last4[-2:] if len(last4) >= 2 else "****"
 
 
 def _resolve_category(

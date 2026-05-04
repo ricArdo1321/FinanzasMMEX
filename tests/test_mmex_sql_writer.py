@@ -433,16 +433,16 @@ def test_sync_hash_unique_index_enforces_dedup(tmp_path) -> None:
     # The partial UNIQUE INDEX on (FIELDID, CONTENT) must exist and block
     # any out-of-band manual duplicate insertion of the same sync_hash.
     with sqlite3.connect(mmex) as conn:
+        field_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
         indexes = {
             row[0]
             for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='index'"
             ).fetchall()
         }
-        assert "uq_finanzasmmex_sync_hash" in indexes
-        field_id = conn.execute(
-            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
-        ).fetchone()[0]
+        assert f"uq_finanzasmmex_sync_hash_{field_id}" in indexes
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
                 "INSERT INTO CUSTOMFIELDDATA_V1 (FIELDID, REFID, CONTENT) "
@@ -493,3 +493,92 @@ def test_apply_tags_links_unique_tags(tmp_path) -> None:
         ).fetchone()[0]
     assert tags == ["joint", "personal"]
     assert links == 2
+
+
+def test_resolve_account_last4_does_not_match_via_wildcard_underscore(tmp_path) -> None:
+    """LIKE '%_1234' must treat '_' as literal, not as the SQL single-char wildcard.
+
+    Without ESCAPE, an account named 'Productive_finanza_X1234' would match
+    last4='1234' and silently route a tx to the wrong account.
+    """
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    with sqlite3.connect(mmex) as conn:
+        conn.execute("DELETE FROM ACCOUNTLIST_V1")
+        conn.execute(
+            "INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME) VALUES (?, ?)",
+            (30, "DecoyX1234"),
+        )
+        conn.commit()
+
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash-wild",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("12340.00"),
+        direction="debit",
+        account_alias="BE_Ricardo_1234",
+        card_last4="1234",
+        merchant_raw="COMERCIO DEMO",
+        merchant_norm="COMERCIO DEMO",
+        tx_type="purchase",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-wild",
+    )
+    with pytest.raises(MmexMappingError, match="not found"):
+        write_sql(
+            [tx],
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+        )
+
+
+def test_partial_unique_index_recreated_after_field_recreation(tmp_path) -> None:
+    """If MMEX deletes and recreates the sync_hash field, the next run must
+    drop the stale partial index and create a fresh one for the new id.
+    """
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    write_sql(
+        [make_tx(fitid="run-1")],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+
+    with sqlite3.connect(mmex) as conn:
+        old_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
+        # Simulate user deleting the sync_hash field in MMEX (along with
+        # any rows that referenced it) and recreating it with a new id.
+        conn.execute("DELETE FROM CUSTOMFIELDDATA_V1 WHERE FIELDID = ?", (old_id,))
+        conn.execute("DELETE FROM CUSTOMFIELD_V1 WHERE FIELDID = ?", (old_id,))
+        conn.commit()
+
+    write_sql(
+        [make_tx(fitid="run-2")],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+
+    with sqlite3.connect(mmex) as conn:
+        new_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
+        indexes = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name LIKE 'uq_finanzasmmex_sync_hash%'"
+            ).fetchall()
+        ]
+    # Old per-field index dropped, new one created for new field id.
+    assert f"uq_finanzasmmex_sync_hash_{new_id}" in indexes
+    assert all(name == f"uq_finanzasmmex_sync_hash_{new_id}" for name in indexes), (
+        f"Stale per-field indexes survived: {indexes}"
+    )
