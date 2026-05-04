@@ -10,15 +10,15 @@ PARSER_NAME = "be_email_v1"
 PARSER_VERSION = "1.0"
 
 _AMOUNT_RE = re.compile(
-    r"compra\s+por\s+(?:(?P<currency>CLP)\s*)?\$?\s*(?P<amount>[0-9][0-9.\s]*)",
+    r"compra\s+por\s+(?:(?P<currency>CLP)\s*)?\$?\s*(?P<amount>[0-9][0-9. ]*)",
     re.IGNORECASE,
 )
 _MERCHANT_RE = re.compile(
-    r"compra\s+por\s+(?:CLP\s*)?\$?\s*[0-9][0-9.\s]*\s+en\s+(.+?)"
+    r"compra\s+por\s+(?:CLP\s*)?\$?\s*[0-9][0-9. ]*\s+en\s+(.+?)"
     r"\s+con\s+cargo\s+(?:a\s+)?(?:la\s+)?(?:cuenta|tarjeta)\s+\*+",
     re.IGNORECASE | re.DOTALL,
 )
-_ACCOUNT_RE = re.compile(r"cuenta\s+\*+(\d{4})", re.IGNORECASE)
+_ACCOUNT_RE = re.compile(r"(?:cuenta|tarjeta)\s+\*+(\d{4})", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"Fecha\s+de\s+la\s+operaci[oó]n:\s*(\d{4}-\d{2}-\d{2})",
     re.IGNORECASE,
@@ -40,14 +40,15 @@ def parse_purchase_email(
     owner: Literal["ricardo", "laura", "joint"] = "ricardo",
 ) -> CanonicalTx:
     content_sha256 = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    text = raw_text.replace("\xa0", " ")
 
-    amount_match = _required_search(_AMOUNT_RE, raw_text, "amount")
+    amount_match = _required_search(_AMOUNT_RE, text, "amount")
     amount = _clean_text(amount_match.group("amount"))
     currency_explicit = amount_match.group("currency") is not None
-    merchant = _required_match(_MERCHANT_RE, raw_text, "merchant")
-    account_last4, account_ambiguous = _account_last4(raw_text)
-    event_date_raw = _required_match(_DATE_RE, raw_text, "event_date")
-    auth_code = _optional_match(_AUTH_RE, raw_text)
+    merchant = _required_match(_MERCHANT_RE, text, "merchant")
+    account_last4, account_ambiguous = _account_last4(text)
+    event_date_raw = _required_match(_DATE_RE, text, "event_date")
+    auth_code = _optional_match(_AUTH_RE, text)
 
     event_date = date.fromisoformat(event_date_raw)
     amount_value = parse_clp_amount(amount)
@@ -108,10 +109,20 @@ def _clean_text(value: str) -> str:
 
 
 def _account_last4(text: str) -> tuple[str, bool]:
-    matches = sorted(set(_ACCOUNT_RE.findall(text)))
+    matches = _distinct_in_order(_ACCOUNT_RE.findall(text))
     if not matches:
         raise BancoEstadoEmailParseError("Missing BancoEstado field: account")
     return matches[0], len(matches) != 1
+
+
+def _distinct_in_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 def _owner_label(owner: Literal["ricardo", "laura", "joint"]) -> str:

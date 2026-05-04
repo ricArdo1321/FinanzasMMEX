@@ -11,12 +11,12 @@ PARSER_VERSION = "1.0"
 
 _AMOUNT_RE = re.compile(
     r"(?:pagaste|compra(?:ste)?(?:\s+por)?|cargo\s+por)\s+"
-    r"(?P<currency>CLP\s*)?\$?\s*(?P<amount>[0-9][0-9.\s]*)",
+    r"(?P<currency>CLP\s*)?\$?\s*(?P<amount>[0-9][0-9. ]*)",
     re.IGNORECASE,
 )
 _MERCHANT_RE = re.compile(
     r"(?:pagaste|compra(?:ste)?(?:\s+por)?|cargo\s+por)\s+"
-    r"(?:CLP\s*)?\$?\s*[0-9][0-9.\s]*\s+en\s+(?P<merchant>.+?)"
+    r"(?:CLP\s*)?\$?\s*[0-9][0-9. ]*\s+en\s+(?P<merchant>.+?)"
     r"(?:\.\s*(?:\n|$)|\n|$)",
     re.IGNORECASE,
 )
@@ -54,7 +54,7 @@ def parse_purchase_email(
 
     amount_match = _required_search(_AMOUNT_RE, text, "amount")
     merchant_match = _required_search(_MERCHANT_RE, text, "merchant")
-    card_last4 = _required_match(_CARD_RE, text, "card_last4")
+    card_last4, card_ambiguous = _card_last4(text)
     event_date = _parse_date(text)
 
     tx_id = _optional_match(_TX_ID_RE, text)
@@ -66,6 +66,8 @@ def parse_purchase_email(
     review_reasons: list[str] = []
     if not currency_explicit:
         review_reasons.append("currency_implicit")
+    if card_ambiguous:
+        review_reasons.append("card_ambiguous")
     if tx_id is None:
         review_reasons.append("partial_extraction:tx_id")
 
@@ -130,6 +132,23 @@ def _optional_match(pattern: re.Pattern[str], text: str) -> str | None:
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _card_last4(text: str) -> tuple[str, bool]:
+    matches = _distinct_in_order(_CARD_RE.findall(text))
+    if not matches:
+        raise MachEmailParseError("Missing Mach field: card_last4")
+    return matches[0], len(matches) != 1
+
+
+def _distinct_in_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 def _owner_label(owner: Literal["ricardo", "laura", "joint"]) -> str:

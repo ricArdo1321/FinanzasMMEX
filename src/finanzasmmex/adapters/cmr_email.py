@@ -11,13 +11,13 @@ PARSER_VERSION = "1.0"
 
 _AMOUNT_RE = re.compile(
     r"compra\s+(?:realizada\s+)?(?:por\s+)?(?P<currency>CLP\s*)?\$?\s*"
-    r"(?P<amount>[0-9][0-9.\s]*)",
+    r"(?P<amount>[0-9][0-9. ]*)",
     re.IGNORECASE,
 )
 _MERCHANT_RE = re.compile(
-    r"compra\s+(?:realizada\s+)?(?:por\s+)?(?:CLP\s*)?\$?\s*[0-9][0-9.\s]*\s+en\s+"
+    r"compra\s+(?:realizada\s+)?(?:por\s+)?(?:CLP\s*)?\$?\s*[0-9][0-9. ]*\s+en\s+"
     r"(?P<merchant>.+?)\s+el\s+\d{2}[/-]\d{2}[/-]\d{4}",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 _CARD_RE = re.compile(
     r"tarjeta\s+(?:CMR\s+)?(?:terminada\s+en|\*+)\s*(\d{4})",
@@ -49,7 +49,7 @@ def parse_purchase_email(
 
     amount_match = _required_search(_AMOUNT_RE, text, "amount")
     merchant_match = _required_search(_MERCHANT_RE, text, "merchant")
-    card_last4 = _required_match(_CARD_RE, text, "card_last4")
+    card_last4, card_ambiguous = _card_last4(text)
     date_match = _required_search(_DATE_RE, text, "event_date")
 
     operation_number = _optional_match(_OPERATION_RE, text)
@@ -69,6 +69,8 @@ def parse_purchase_email(
         review_reasons.append("currency_implicit")
     if installments is not None and installments > 1:
         review_reasons.append(f"installments:{installments}")
+    if card_ambiguous:
+        review_reasons.append("card_ambiguous")
     if operation_number is None:
         review_reasons.append("partial_extraction:operation_number")
 
@@ -120,6 +122,23 @@ def _optional_match(pattern: re.Pattern[str], text: str) -> str | None:
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _card_last4(text: str) -> tuple[str, bool]:
+    matches = _distinct_in_order(_CARD_RE.findall(text))
+    if not matches:
+        raise CmrEmailParseError("Missing CMR field: card_last4")
+    return matches[0], len(matches) != 1
+
+
+def _distinct_in_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 def _installments(text: str) -> int | None:
