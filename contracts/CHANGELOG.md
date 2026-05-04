@@ -2,6 +2,31 @@
 
 Registra cambios al contrato JSON `{ok, data, errors, warnings, run_id}` consumido por la UI WPF. La forma del envelope se valida contra `contracts/envelope.schema.json`.
 
+## 2026-05-04 - Issue #3 - Fase 2 SQL writer
+
+### Added
+
+- `run --writer sql` escribe transacciones pendientes desde `staging.db` hacia
+  un `.mmb` de test/shadow mediante contrato JSON.
+  - Flags nuevos: `--mmex-db`, `--backup-dir`, `--allow-shadow-write`.
+  - `--allow-shadow-write` es obligatorio y el destino debe ser `.mmb` de
+    test/shadow; `finanza.mmb` productivo y `.emb` se rechazan.
+  - `data.mmex_path`, `data.backup_pre_path`, `data.backup_post_path`.
+  - `data.items_skipped_duplicate`, `data.items_rejected_unsupported`,
+    `data.mmex_tx_ids`, `data.mmex_account_ids`.
+- Error `MMEX_LOCKED` usa exit code `4` cuando SQLite/MMEX no permite
+  `BEGIN IMMEDIATE`.
+
+### Changed
+
+- Defaults de datos/artefactos salen de la raiz del repo hacia `C:\Finanzas\`:
+  `staging.db`, reportes, OFX y backups.
+
+### Breaking changes
+
+Ninguno para el envelope. `run --writer ofx`, `review`, `quickadd` y `login`
+mantienen sus campos existentes cuando se pasan rutas explicitas.
+
 ## 2026-05-03 — PR #13 (issue #12) — Fase 1.6
 
 ### Added

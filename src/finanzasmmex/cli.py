@@ -11,14 +11,29 @@ from typing import Any, NoReturn
 from .etl.fitid import ensure_fitid
 from .etl.normalize import parse_clp_amount
 from .models import CanonicalTx
-from .orchestrator.jobs import run_gmail_bancoestado_to_ofx, run_mp_to_ofx
+from .orchestrator.jobs import (
+    run_gmail_bancoestado_to_ofx,
+    run_mp_to_ofx,
+    run_pending_to_sql,
+)
 from .secrets.vault import Vault
 from .staging.repo import StagingRepo
+from .writer.mmex_sql import (
+    MmexLockedError,
+    MmexMappingError,
+    MmexSafetyError,
+    MmexSchemaError,
+)
 
 VALID_EXIT_CODES = {0, 2, 3, 4, 5}
 MP_VAULT_KEY = "mp_access_token"
 MP_TOKEN_ENV = "MP_ACCESS_TOKEN"
 DISABLE_VAULT_ENV = "FINANZASMMEX_DISABLE_VAULT"
+DEFAULT_DATA_DIR = r"C:\Finanzas"
+DEFAULT_STAGING_DB = rf"{DEFAULT_DATA_DIR}\staging.db"
+DEFAULT_REPORT_OUTPUT = rf"{DEFAULT_DATA_DIR}\reports\review.html"
+DEFAULT_OFX_OUTPUT = rf"{DEFAULT_DATA_DIR}\reports\finanzasmmex.ofx"
+DEFAULT_BACKUP_DIR = rf"{DEFAULT_DATA_DIR}\backups"
 
 VALID_OWNERS = {"ricardo", "laura", "joint"}
 VALID_DIRECTIONS = {"debit", "credit"}
@@ -205,6 +220,58 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
     )
 
 
+def _run_sql(args: argparse.Namespace) -> NoReturn:
+    if not args.mmex_db:
+        _validation_error(
+            "--mmex-db is required when --writer sql is used",
+            {"field": "--mmex-db"},
+        )
+    if not args.allow_shadow_write:
+        _validation_error(
+            "SQL writer requires explicit shadow/test write flag",
+            {"field": "--allow-shadow-write"},
+        )
+    if not Path(args.db).is_file():
+        _validation_error(
+            "staging.db does not exist",
+            {"field": "--db", "db_path": args.db},
+        )
+    try:
+        result = run_pending_to_sql(
+            db_path=args.db,
+            mmex_db_path=args.mmex_db,
+            backup_dir=args.backup_dir,
+            allow_shadow_write=args.allow_shadow_write,
+        )
+    except MmexLockedError as exc:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "MMEX_LOCKED",
+                    "message": str(exc),
+                    "details": {"mmex_db": args.mmex_db},
+                }
+            ],
+            exit_code=4,
+        )
+    except (MmexSafetyError, MmexMappingError, MmexSchemaError) as exc:
+        _validation_error(
+            str(exc),
+            {"exception_type": type(exc).__name__, "mmex_db": args.mmex_db},
+        )
+
+    _emit(
+        True,
+        data={
+            "message": "MMEX SQL writer completed",
+            "source": args.source,
+            "writer": args.writer,
+            **result.as_dict(),
+        },
+    )
+
+
 def _validation_error(message: str, details: dict[str, Any] | None = None) -> NoReturn:
     _emit(
         False,
@@ -366,9 +433,7 @@ def _run_review_update(args: argparse.Namespace) -> NoReturn:
             ],
             exit_code=5,
         )
-    public_fields = sorted(
-        ("tags" if name == "tags_json" else name) for name in fields
-    )
+    public_fields = sorted(("tags" if name == "tags_json" else name) for name in fields)
     _emit(
         True,
         data={
@@ -556,7 +621,9 @@ def main() -> None:
 
     # init command
     init_parser = subparsers.add_parser("init", help="Initialize the database")
-    init_parser.add_argument("--db", default="staging.db", help="Path to staging.db")
+    init_parser.add_argument(
+        "--db", default=DEFAULT_STAGING_DB, help="Path to staging.db"
+    )
     init_parser.add_argument(
         "--schema",
         default="src/finanzasmmex/staging/schema.sql",
@@ -584,7 +651,9 @@ def main() -> None:
             "for offline Gmail ingestion"
         ),
     )
-    run_parser.add_argument("--db", default="staging.db", help="Path to staging.db")
+    run_parser.add_argument(
+        "--db", default=DEFAULT_STAGING_DB, help="Path to staging.db"
+    )
     run_parser.add_argument(
         "--schema",
         default="src/finanzasmmex/staging/schema.sql",
@@ -592,13 +661,27 @@ def main() -> None:
     )
     run_parser.add_argument(
         "--ofx-output",
-        default="reports/finanzasmmex.ofx",
+        default=DEFAULT_OFX_OUTPUT,
         help="Path to write the OFX file",
     )
     run_parser.add_argument(
         "--report-output",
-        default="reports/review.html",
+        default=DEFAULT_REPORT_OUTPUT,
         help="Path to write the HTML review report",
+    )
+    run_parser.add_argument(
+        "--mmex-db",
+        help="Path to the test/shadow .mmb database for --writer sql",
+    )
+    run_parser.add_argument(
+        "--backup-dir",
+        default=DEFAULT_BACKUP_DIR,
+        help="Directory for SQL writer pre/post backups",
+    )
+    run_parser.add_argument(
+        "--allow-shadow-write",
+        action="store_true",
+        help="Required to enable SQL writes to a test/shadow .mmb",
     )
 
     # login command
@@ -628,7 +711,7 @@ def main() -> None:
         "list", help="List transactions matching the given filters"
     )
     review_list_parser.add_argument(
-        "--db", default="staging.db", help="Path to staging.db"
+        "--db", default=DEFAULT_STAGING_DB, help="Path to staging.db"
     )
     review_list_parser.add_argument(
         "--owner",
@@ -662,7 +745,7 @@ def main() -> None:
     review_update_parser = review_sub.add_parser(
         "update", help="Update reviewable fields on a transaction"
     )
-    review_update_parser.add_argument("--db", default="staging.db")
+    review_update_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
     review_update_parser.add_argument("--tx-uid", required=True, help="Target tx_uid")
     review_update_parser.add_argument("--owner", default=None)
     review_update_parser.add_argument("--category-guess", default=None)
@@ -671,15 +754,13 @@ def main() -> None:
     review_update_parser.add_argument(
         "--tags", default=None, help="Comma-separated list of tags (overwrites)"
     )
-    review_update_parser.add_argument(
-        "--needs-review", default=None, help="true/false"
-    )
+    review_update_parser.add_argument("--needs-review", default=None, help="true/false")
     review_update_parser.add_argument("--review-reason", default=None)
 
     review_resolve_parser = review_sub.add_parser(
         "resolve", help="Set the mmex_status of a transaction"
     )
-    review_resolve_parser.add_argument("--db", default="staging.db")
+    review_resolve_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
     review_resolve_parser.add_argument("--tx-uid", required=True)
     review_resolve_parser.add_argument(
         "--status",
@@ -702,7 +783,7 @@ def main() -> None:
     quickadd_create_parser = quickadd_sub.add_parser(
         "create", help="Insert a manual transaction in the staging DB"
     )
-    quickadd_create_parser.add_argument("--db", default="staging.db")
+    quickadd_create_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
     quickadd_create_parser.add_argument(
         "--owner", required=True, choices=sorted(VALID_OWNERS)
     )
@@ -741,11 +822,7 @@ def main() -> None:
     try:
         if argv in (["-h"], ["--help"]):
             _emit(True, data={"help": parser.format_help()})
-        if (
-            len(argv) >= 2
-            and argv[-1] in ("-h", "--help")
-            and argv[0] in help_parsers
-        ):
+        if len(argv) >= 2 and argv[-1] in ("-h", "--help") and argv[0] in help_parsers:
             _emit(True, data={"help": help_parsers[argv[0]].format_help()})
 
         args = parser.parse_args(argv)
@@ -775,17 +852,7 @@ def main() -> None:
             )
         elif args.command == "run":
             if args.writer == "sql":
-                _emit(
-                    False,
-                    errors=[
-                        {
-                            "code": "VALIDATION_ERROR",
-                            "message": "SQL writer is not available until Phase 2",
-                            "details": {"writer": args.writer},
-                        }
-                    ],
-                    exit_code=2,
-                )
+                _run_sql(args)
             if args.source not in {"gmail", "mp"}:
                 _emit(
                     False,

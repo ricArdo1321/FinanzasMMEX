@@ -10,6 +10,7 @@ from ..artifacts import safe_output_path
 from ..etl.pipeline import prepare_for_staging
 from ..models import CanonicalTx
 from ..staging.repo import StagingRepo
+from ..writer.mmex_sql import SqlWriteSummary, write_sql
 from ..writer.ofx_export import write_ofx
 
 
@@ -31,6 +32,70 @@ class RunSummary:
             "ofx_path": self.ofx_path,
             "report_path": self.report_path,
         }
+
+
+@dataclass(frozen=True)
+class SqlRunSummary:
+    items_processed: int
+    items_inserted: int
+    items_review: int
+    items_skipped_duplicate: int
+    items_rejected_unsupported: int
+    db_path: str
+    mmex_path: str
+    backup_pre_path: str | None
+    backup_post_path: str | None
+    mmex_tx_ids: dict[str, int]
+    mmex_account_ids: dict[str, int]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "items_processed": self.items_processed,
+            "items_inserted": self.items_inserted,
+            "items_review": self.items_review,
+            "items_skipped_duplicate": self.items_skipped_duplicate,
+            "items_rejected_unsupported": self.items_rejected_unsupported,
+            "db_path": self.db_path,
+            "mmex_path": self.mmex_path,
+            "backup_pre_path": self.backup_pre_path,
+            "backup_post_path": self.backup_post_path,
+            "mmex_tx_ids": self.mmex_tx_ids,
+            "mmex_account_ids": self.mmex_account_ids,
+        }
+
+
+def run_pending_to_sql(
+    *,
+    db_path: str,
+    mmex_db_path: str,
+    backup_dir: str,
+    allow_shadow_write: bool,
+) -> SqlRunSummary:
+    repo = StagingRepo(db_path)
+    transactions = repo.list_txs(mmex_status="pending", limit=10_000)
+    summary = write_sql(
+        transactions,
+        mmex_db_path=mmex_db_path,
+        backup_dir=backup_dir,
+        allow_shadow_write=allow_shadow_write,
+        # Hard rule: a batch with any account in reconcile_log.status='off'
+        # must block the writer. Pass the repo so write_sql can enforce it.
+        staging_repo=repo,
+    )
+    _mark_inserted(repo, summary)
+    return SqlRunSummary(
+        items_processed=summary.items_considered,
+        items_inserted=summary.items_inserted,
+        items_review=summary.items_rejected_review,
+        items_skipped_duplicate=summary.items_skipped_duplicate,
+        items_rejected_unsupported=summary.items_rejected_unsupported,
+        db_path=db_path,
+        mmex_path=summary.mmex_path,
+        backup_pre_path=summary.backup_pre_path,
+        backup_post_path=summary.backup_post_path,
+        mmex_tx_ids=summary.mmex_tx_ids,
+        mmex_account_ids=summary.mmex_account_ids,
+    )
 
 
 def run_gmail_bancoestado_to_ofx(
@@ -197,6 +262,19 @@ def _ensure_db(repo: StagingRepo, db_path: Path, schema_path: str) -> None:
     if db_path.exists():
         return
     repo.init_db(schema_path)
+
+
+def _mark_inserted(
+    repo: StagingRepo,
+    summary: SqlWriteSummary,
+) -> None:
+    for tx_uid, mmex_tx_id in summary.mmex_tx_ids.items():
+        mmex_account_id = summary.mmex_account_ids[tx_uid]
+        repo.mark_inserted(
+            tx_uid,
+            mmex_account_id=mmex_account_id,
+            mmex_tx_id=mmex_tx_id,
+        )
 
 
 def _report_row(tx: CanonicalTx) -> str:

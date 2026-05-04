@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,64 @@ def run_cli(
 
 def parse_stdout(result: subprocess.CompletedProcess[str]) -> dict:
     return json.loads(result.stdout)
+
+
+def create_mmex_db(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE ACCOUNTLIST_V1 (
+                ACCOUNTID INTEGER PRIMARY KEY,
+                ACCOUNTNAME TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE PAYEE_V1 (
+                PAYEEID INTEGER PRIMARY KEY,
+                PAYEENAME TEXT NOT NULL UNIQUE,
+                CATEGID INTEGER,
+                SUBCATEGID INTEGER
+            );
+            CREATE TABLE CATEGORY_V1 (
+                CATEGID INTEGER PRIMARY KEY,
+                CATEGNAME TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE SUBCATEGORY_V1 (
+                SUBCATEGID INTEGER PRIMARY KEY,
+                SUBCATEGNAME TEXT NOT NULL,
+                CATEGID INTEGER NOT NULL
+            );
+            CREATE TABLE CHECKINGACCOUNT_V1 (
+                TRANSID INTEGER PRIMARY KEY,
+                ACCOUNTID INTEGER NOT NULL,
+                TOACCOUNTID INTEGER,
+                PAYEEID INTEGER,
+                TRANSCODE TEXT NOT NULL,
+                TRANSAMOUNT TEXT NOT NULL,
+                STATUS TEXT,
+                TRANSACTIONNUMBER TEXT,
+                NOTES TEXT,
+                CATEGID INTEGER,
+                SUBCATEGID INTEGER,
+                TRANSDATE TEXT NOT NULL,
+                FOLLOWUPID INTEGER,
+                TOTRANSAMOUNT TEXT,
+                COLOR TEXT,
+                DELETEDTIME TEXT
+            );
+            CREATE TABLE CUSTOMFIELD_V1 (
+                FIELDID INTEGER PRIMARY KEY,
+                REFTYPE TEXT,
+                DESCRIPTION TEXT NOT NULL,
+                TYPE TEXT,
+                PROPERTIES TEXT
+            );
+            CREATE TABLE CUSTOMFIELDDATA_V1 (
+                FIELDATADID INTEGER PRIMARY KEY,
+                FIELDID INTEGER NOT NULL,
+                REFID INTEGER NOT NULL,
+                CONTENT TEXT NOT NULL
+            );
+            INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME)
+            VALUES (10, 'BE_Ricardo_1234');
+            """)
 
 
 def test_missing_command_returns_json_validation_error() -> None:
@@ -204,3 +263,150 @@ def test_init_missing_schema_returns_validation_error(tmp_path) -> None:
     assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
     assert payload["errors"][0]["details"]["schema_path"].endswith("missing.sql")
     assert payload["warnings"] == []
+
+
+def test_run_sql_success_returns_sql_metrics_and_updates_staging(tmp_path) -> None:
+    db = tmp_path / "staging.db"
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+
+    init = run_cli(
+        "init",
+        "--db",
+        str(db),
+        "--schema",
+        str(ROOT / "src" / "finanzasmmex" / "staging" / "schema.sql"),
+    )
+    assert init.returncode == 0, init.stdout
+    created = run_cli(
+        "quickadd",
+        "create",
+        "--db",
+        str(db),
+        "--owner",
+        "ricardo",
+        "--account-alias",
+        "BE_Ricardo_1234",
+        "--amount",
+        "12340",
+        "--direction",
+        "debit",
+        "--date",
+        "2026-05-02",
+        "--merchant-raw",
+        "COMERCIO DEMO",
+        "--category-guess",
+        "Compras",
+    )
+    assert created.returncode == 0, created.stdout
+
+    result = run_cli(
+        "run",
+        "--writer",
+        "sql",
+        "--db",
+        str(db),
+        "--mmex-db",
+        str(mmex),
+        "--backup-dir",
+        str(backups),
+        "--allow-shadow-write",
+    )
+
+    payload = parse_stdout(result)
+    assert result.returncode == 0, result.stdout
+    assert payload["ok"] is True
+    assert payload["data"]["writer"] == "sql"
+    assert payload["data"]["items_inserted"] == 1
+    assert Path(payload["data"]["backup_pre_path"]).is_file()
+    assert Path(payload["data"]["backup_post_path"]).is_file()
+    assert payload["data"]["mmex_tx_ids"]
+
+    listed = parse_stdout(
+        run_cli("review", "list", "--db", str(db), "--status", "inserted")
+    )
+    assert listed["data"]["count"] == 1
+    assert listed["data"]["items"][0]["mmex_status"] == "inserted"
+
+
+def test_run_sql_requires_shadow_write_flag(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    mmex.touch()
+
+    result = run_cli(
+        "run",
+        "--writer",
+        "sql",
+        "--db",
+        str(tmp_path / "staging.db"),
+        "--mmex-db",
+        str(mmex),
+        "--backup-dir",
+        str(tmp_path / "backups"),
+    )
+
+    payload = parse_stdout(result)
+    assert result.returncode == 2
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
+    assert "explicit" in payload["errors"][0]["message"]
+
+
+def test_run_sql_locked_db_returns_exit_4(tmp_path) -> None:
+    db = tmp_path / "staging.db"
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    init = run_cli(
+        "init",
+        "--db",
+        str(db),
+        "--schema",
+        str(ROOT / "src" / "finanzasmmex" / "staging" / "schema.sql"),
+    )
+    assert init.returncode == 0, init.stdout
+    created = run_cli(
+        "quickadd",
+        "create",
+        "--db",
+        str(db),
+        "--owner",
+        "ricardo",
+        "--account-alias",
+        "BE_Ricardo_1234",
+        "--amount",
+        "12340",
+        "--direction",
+        "debit",
+        "--date",
+        "2026-05-02",
+        "--merchant-raw",
+        "COMERCIO DEMO",
+        "--category-guess",
+        "Compras",
+    )
+    assert created.returncode == 0, created.stdout
+
+    locker = sqlite3.connect(mmex, isolation_level=None)
+    try:
+        locker.execute("BEGIN EXCLUSIVE")
+        result = run_cli(
+            "run",
+            "--writer",
+            "sql",
+            "--db",
+            str(db),
+            "--mmex-db",
+            str(mmex),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+            "--allow-shadow-write",
+        )
+    finally:
+        locker.rollback()
+        locker.close()
+
+    payload = parse_stdout(result)
+    assert result.returncode == 4
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "MMEX_LOCKED"
