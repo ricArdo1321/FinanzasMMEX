@@ -236,6 +236,10 @@ def _run_sql(args: argparse.Namespace) -> NoReturn:
             "staging.db does not exist",
             {"field": "--db", "db_path": args.db},
         )
+    # Echo only the basename of the .mmb in error envelopes — the full
+    # absolute path is local file-system metadata that should not surface
+    # to UIs or logs.
+    mmex_basename = Path(args.mmex_db).name
     try:
         result = run_pending_to_sql(
             db_path=args.db,
@@ -250,7 +254,7 @@ def _run_sql(args: argparse.Namespace) -> NoReturn:
                 {
                     "code": "MMEX_LOCKED",
                     "message": str(exc),
-                    "details": {"mmex_db": args.mmex_db},
+                    "details": {"mmex_db": mmex_basename},
                 }
             ],
             exit_code=4,
@@ -258,18 +262,21 @@ def _run_sql(args: argparse.Namespace) -> NoReturn:
     except (MmexSafetyError, MmexMappingError, MmexSchemaError) as exc:
         _validation_error(
             str(exc),
-            {"exception_type": type(exc).__name__, "mmex_db": args.mmex_db},
+            {"exception_type": type(exc).__name__, "mmex_db": mmex_basename},
         )
-
-    _emit(
-        True,
-        data={
-            "message": "MMEX SQL writer completed",
-            "source": args.source,
-            "writer": args.writer,
-            **result.as_dict(),
-        },
-    )
+    else:
+        # Reachable only on a successful run; the except branches above
+        # are NoReturn (they call sys.exit). Using else binds `result`
+        # to its happy-path scope and removes any UnboundLocalError risk.
+        _emit(
+            True,
+            data={
+                "message": "MMEX SQL writer completed",
+                "source": args.source,
+                "writer": args.writer,
+                **result.as_dict(),
+            },
+        )
 
 
 def _validation_error(message: str, details: dict[str, Any] | None = None) -> NoReturn:
@@ -853,26 +860,27 @@ def main() -> None:
         elif args.command == "run":
             if args.writer == "sql":
                 _run_sql(args)
-            if args.source not in {"gmail", "mp"}:
-                _emit(
-                    False,
-                    errors=[
-                        {
-                            "code": "VALIDATION_ERROR",
-                            "message": (
-                                "Only gmail and mp sources are implemented "
-                                "in this cut"
-                            ),
-                            "details": {"source": args.source},
-                        }
-                    ],
-                    exit_code=2,
-                )
-
-            if args.source == "gmail":
-                _run_gmail(args)
             else:
-                _run_mp(args)
+                if args.source not in {"gmail", "mp"}:
+                    _emit(
+                        False,
+                        errors=[
+                            {
+                                "code": "VALIDATION_ERROR",
+                                "message": (
+                                    "Only gmail and mp sources are implemented "
+                                    "in this cut"
+                                ),
+                                "details": {"source": args.source},
+                            }
+                        ],
+                        exit_code=2,
+                    )
+
+                if args.source == "gmail":
+                    _run_gmail(args)
+                else:
+                    _run_mp(args)
         elif args.command == "login":
             _run_login(args)
         elif args.command == "review":
