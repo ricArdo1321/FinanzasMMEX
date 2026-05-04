@@ -118,6 +118,8 @@ def write_sql(
     # Pre-backup runs on a separate read-only connection. The SQLite Online
     # Backup API is safe even if MMEX re-opens between the probe and here —
     # it serialises pages through SQLite's locking instead of shutil.copy2.
+    # Pre-backup failure MUST abort (no COMMIT has happened yet); only the
+    # post-backup is tolerant to OSError because the COMMIT already succeeded.
     pre_backup_path: Path | None = _safe_backup(mmex_path, backup_dir, "pre")
     inserted: dict[str, int] = {}
     inserted_accounts: dict[str, int] = {}
@@ -282,7 +284,11 @@ def _safe_backup_via_conn(
 def _prune_old_backups(backup_dir: Path, stem: str) -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=_BACKUP_RETENTION_DAYS)
     cutoff_ts = cutoff.timestamp()
-    for entry in backup_dir.glob(f"{stem}.*.mmb"):
+    # Anchor on the exact stamp pattern (YYYYMMDDTHHMMSS_microsecondsZ) so a
+    # different stem that happens to share a prefix with `stem` cannot be
+    # cross-deleted from this directory.
+    pattern = f"{stem}.????????T??????_*Z.*.mmb"
+    for entry in backup_dir.glob(pattern):
         try:
             if entry.stat().st_mtime < cutoff_ts:
                 entry.unlink()
@@ -318,7 +324,6 @@ def _connect(mmex_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
-
 
 
 
