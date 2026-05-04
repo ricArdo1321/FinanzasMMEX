@@ -142,7 +142,9 @@ def write_sql(
                 duplicates += 1
                 continue
 
-            account_id = _resolve_account_id(conn, tx.account_alias)
+            account_id = _resolve_account_id(
+                conn, tx.account_alias, card_last4=tx.card_last4
+            )
             category_id, subcategory_id = _resolve_category(
                 conn,
                 tx.category_guess,
@@ -163,6 +165,7 @@ def write_sql(
                 subcategory_id=subcategory_id,
             )
             _insert_sync_hash(conn, sync_field_id, mmex_tx_id, tx.fitid_synthetic)
+            _apply_tags(conn, tx.tags, mmex_tx_id)
             inserted[tx.tx_uid] = mmex_tx_id
             inserted_accounts[tx.tx_uid] = account_id
 
@@ -386,16 +389,88 @@ def _next_id(conn: sqlite3.Connection, table: str, column: str) -> int:
     return int(row[0])
 
 
+def _is_integer_pk(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """True if `column` is the table's INTEGER PRIMARY KEY (auto-incrementing).
+
+    SQLite auto-assigns a fresh ROWID on INSERT when a column is
+    INTEGER PRIMARY KEY and the value is omitted (or NULL). Using
+    lastrowid avoids the MAX()+1 race that would otherwise reuse IDs of
+    soft-deleted rows in a multi-writer scenario.
+    """
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    for row in rows:
+        if row["name"] == column:
+            return bool(row["pk"]) and str(row["type"]).strip().upper() == "INTEGER"
+    return False
+
+
+def _insert_row_returning_id(
+    conn: sqlite3.Connection,
+    table: str,
+    values: dict[str, object],
+    id_col: str,
+) -> int:
+    """Insert and return the row's primary key.
+
+    Uses SQLite lastrowid when `id_col` is INTEGER PRIMARY KEY. Falls
+    back to MAX()+1 for non-PK identifier columns (still safe inside
+    the writer's BEGIN IMMEDIATE transaction).
+    """
+    if _is_integer_pk(conn, table, id_col):
+        values_no_id = {key: val for key, val in values.items() if key != id_col}
+        columns = list(values_no_id)
+        placeholders = ", ".join("?" for _ in columns)
+        column_sql = ", ".join(columns)
+        cursor = conn.execute(
+            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+            [values_no_id[column] for column in columns],
+        )
+        last = cursor.lastrowid
+        if last is None:
+            raise MmexSchemaError(
+                f"Insert into {table} did not return a lastrowid"
+            )
+        return int(last)
+    if id_col not in values:
+        values[id_col] = _next_id(conn, table, id_col)
+    _insert_row(conn, table, values)
+    raw_id = values[id_col]
+    if not isinstance(raw_id, int):
+        raise MmexSchemaError(
+            f"Identifier for {table}.{id_col} must be int, got {type(raw_id).__name__}"
+        )
+    return raw_id
+
+
 def _ensure_sync_hash_field(conn: sqlite3.Connection) -> int:
+    """Resolve or create the FinanzasMMEX sync_hash CustomField in MMEX.
+
+    Uses EXACT match by name to avoid silent re-creation if MMEX renames
+    the field via UI to a different casing. If a different casing already
+    exists we fail loudly: the operator must reconcile the schema before
+    we keep writing dedup pointers under a new field id.
+    """
     columns = _columns(conn, "CUSTOMFIELD_V1")
     id_col = _first_present(columns, ("FIELDID", "CUSTOMFIELDID"))
     name_col = _first_present(columns, ("DESCRIPTION", "FIELDNAME", "NAME"))
     row = conn.execute(
-        f"SELECT {id_col} FROM CUSTOMFIELD_V1 WHERE lower({name_col}) = ?",
+        f"SELECT {id_col} FROM CUSTOMFIELD_V1 WHERE {name_col} = ?",
         ("sync_hash",),
     ).fetchone()
     if row is not None:
-        return int(row[id_col])
+        field_id = int(row[id_col])
+        _ensure_sync_hash_unique_index(conn, field_id)
+        return field_id
+
+    collision = conn.execute(
+        f"SELECT COUNT(*) FROM CUSTOMFIELD_V1 WHERE lower({name_col}) = ?",
+        ("sync_hash",),
+    ).fetchone()[0]
+    if int(collision) > 0:
+        raise MmexSchemaError(
+            "CUSTOMFIELD_V1 already has a sync_hash entry under a different "
+            "casing; rename or remove it manually before re-running"
+        )
 
     field_id = _next_id(conn, "CUSTOMFIELD_V1", id_col)
     values: dict[str, object] = {id_col: field_id, name_col: "sync_hash"}
@@ -406,7 +481,31 @@ def _ensure_sync_hash_field(conn: sqlite3.Connection) -> int:
     if "PROPERTIES" in columns:
         values["PROPERTIES"] = ""
     _insert_row(conn, "CUSTOMFIELD_V1", values)
+    _ensure_sync_hash_unique_index(conn, field_id)
     return field_id
+
+
+def _ensure_sync_hash_unique_index(
+    conn: sqlite3.Connection, field_id: int
+) -> None:
+    """DB-level dedup enforcement for FinanzasMMEX sync_hash entries.
+
+    A partial UNIQUE INDEX over (FIELDID, CONTENT) restricted to our
+    sync_hash field guarantees that even a manual MMEX edit that adds a
+    duplicate sync_hash under our field cannot survive a subsequent
+    INSERT. Other CustomFields (where duplicate CONTENT is legitimate)
+    are unaffected by the partial predicate.
+    """
+    field_col, _ref_col, content_col, _id_col = _sync_data_columns(conn)
+    # Partial-index WHERE must be a literal expression; field_id is bound
+    # to a freshly-resolved trusted integer so no SQL-injection risk.
+    conn.execute(
+        f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_finanzasmmex_sync_hash
+        ON CUSTOMFIELDDATA_V1 ({field_col}, {content_col})
+        WHERE {field_col} = {int(field_id)}
+        """
+    )
 
 
 def _sync_data_columns(conn: sqlite3.Connection) -> tuple[str, str, str, str | None]:
@@ -458,24 +557,62 @@ def _insert_sync_hash(
         ref_col: mmex_tx_id,
         content_col: sync_hash,
     }
-    if id_col is not None:
-        values[id_col] = _next_id(conn, "CUSTOMFIELDDATA_V1", id_col)
-    _insert_row(conn, "CUSTOMFIELDDATA_V1", values)
+    if id_col is None:
+        _insert_row(conn, "CUSTOMFIELDDATA_V1", values)
+        return
+    _insert_row_returning_id(conn, "CUSTOMFIELDDATA_V1", values, id_col)
 
 
-def _resolve_account_id(conn: sqlite3.Connection, account_alias: str) -> int:
+def _resolve_account_id(
+    conn: sqlite3.Connection,
+    account_alias: str,
+    *,
+    card_last4: str | None = None,
+) -> int:
+    """Resolve a MMEX ACCOUNTID without assuming a single user.
+
+    Strategy:
+    1. Exact ACCOUNTNAME match — the canonical path.
+    2. Fallback by card_last4 suffix when exact alias is missing — useful
+       when the staging alias was renamed in MMEX but still ends in the
+       same _<last4>.
+    3. Any ambiguity (>1 row) raises MmexMappingError with the count so
+       the operator can reconcile manually.
+    """
     columns = _columns(conn, "ACCOUNTLIST_V1")
     id_col = _first_present(columns, ("ACCOUNTID",))
     name_col = _first_present(columns, ("ACCOUNTNAME", "ACCOUNTNAME_U"))
+
     rows = conn.execute(
         f"SELECT {id_col} FROM ACCOUNTLIST_V1 WHERE {name_col} = ?",
         (account_alias,),
     ).fetchall()
-    if len(rows) != 1:
+    if len(rows) == 1:
+        return int(rows[0][id_col])
+    if len(rows) > 1:
         raise MmexMappingError(
-            f"MMEX account is not uniquely resolved: {account_alias}"
+            f"MMEX account ambiguous for alias '{account_alias}': "
+            f"{len(rows)} rows match"
         )
-    return int(rows[0][id_col])
+
+    if card_last4:
+        suffix = f"%_{card_last4}"
+        rows = conn.execute(
+            f"SELECT {id_col} FROM ACCOUNTLIST_V1 WHERE {name_col} LIKE ?",
+            (suffix,),
+        ).fetchall()
+        if len(rows) == 1:
+            return int(rows[0][id_col])
+        if len(rows) > 1:
+            raise MmexMappingError(
+                f"MMEX account ambiguous by last4 '{card_last4}': "
+                f"{len(rows)} rows match"
+            )
+
+    raise MmexMappingError(
+        f"MMEX account not found for alias '{account_alias}'"
+        + (f" or card_last4 '{card_last4}'" if card_last4 else "")
+    )
 
 
 def _resolve_category(
@@ -507,11 +644,11 @@ def _resolve_category(
     ).fetchone()
     if row is not None:
         return category_id, int(row[id_col])
-    subcategory_id = _next_id(conn, "SUBCATEGORY_V1", id_col)
-    _insert_row(
+    subcategory_id = _insert_row_returning_id(
         conn,
         "SUBCATEGORY_V1",
-        {id_col: subcategory_id, name_col: subcategory_name, parent_col: category_id},
+        {name_col: subcategory_name, parent_col: category_id},
+        id_col,
     )
     return category_id, subcategory_id
 
@@ -532,14 +669,12 @@ def _resolve_payee_id(
     if row is not None:
         return int(row[id_col])
 
-    payee_id = _next_id(conn, "PAYEE_V1", id_col)
-    values: dict[str, object] = {id_col: payee_id, name_col: payee_name}
+    values: dict[str, object] = {name_col: payee_name}
     if "CATEGID" in columns:
         values["CATEGID"] = category_id
     if "SUBCATEGID" in columns:
         values["SUBCATEGID"] = subcategory_id
-    _insert_row(conn, "PAYEE_V1", values)
-    return payee_id
+    return _insert_row_returning_id(conn, "PAYEE_V1", values, id_col)
 
 
 def _get_or_create_named(
@@ -559,9 +694,7 @@ def _get_or_create_named(
     ).fetchone()
     if row is not None:
         return int(row[id_col])
-    row_id = _next_id(conn, table, id_col)
-    _insert_row(conn, table, {id_col: row_id, name_col: name})
-    return row_id
+    return _insert_row_returning_id(conn, table, {name_col: name}, id_col)
 
 
 def _insert_checking_tx(
@@ -575,13 +708,11 @@ def _insert_checking_tx(
 ) -> int:
     columns = _columns(conn, "CHECKINGACCOUNT_V1")
     trans_id_col = _first_present(columns, ("TRANSID",))
-    trans_id = _next_id(conn, "CHECKINGACCOUNT_V1", trans_id_col)
     tx_date = tx.posted_date or tx.event_date or tx.booking_date
     if tx_date is None:
         raise MmexMappingError("Transaction date is required for SQL writer")
 
     values: dict[str, object] = {
-        trans_id_col: trans_id,
         "ACCOUNTID": account_id,
         "TOACCOUNTID": -1,
         "PAYEEID": payee_id,
@@ -605,8 +736,68 @@ def _insert_checking_tx(
         raise MmexSchemaError(
             f"CHECKINGACCOUNT_V1 missing required columns: {sorted(missing)}"
         )
-    _insert_row(conn, "CHECKINGACCOUNT_V1", filtered)
-    return trans_id
+    return _insert_row_returning_id(conn, "CHECKINGACCOUNT_V1", filtered, trans_id_col)
+
+
+def _resolve_or_create_tag(conn: sqlite3.Connection, tag_name: str) -> int:
+    columns = _columns(conn, "TAG_V1")
+    id_col = _first_present(columns, ("TAGID",))
+    name_col = _first_present(columns, ("TAGNAME",))
+    row = conn.execute(
+        f"SELECT {id_col} FROM TAG_V1 WHERE {name_col} = ?",
+        (tag_name,),
+    ).fetchone()
+    if row is not None:
+        return int(row[id_col])
+    values: dict[str, object] = {name_col: tag_name}
+    if "ACTIVE" in columns:
+        values["ACTIVE"] = 1
+    return _insert_row_returning_id(conn, "TAG_V1", values, id_col)
+
+
+def _link_tag_to_tx(
+    conn: sqlite3.Connection, tag_id: int, mmex_tx_id: int
+) -> None:
+    columns = _columns(conn, "TAGLINK_V1")
+    link_id_col = _first_present(columns, ("TAGLINKID",))
+    tag_col = _first_present(columns, ("TAGID",))
+    ref_col = _first_present(columns, ("REFID",))
+    reftype_col = "REFTYPE" if "REFTYPE" in columns else None
+
+    where = f"{tag_col} = ? AND {ref_col} = ?"
+    params: list[object] = [tag_id, mmex_tx_id]
+    if reftype_col:
+        where += f" AND {reftype_col} = ?"
+        params.append("Transaction")
+    existing = conn.execute(
+        f"SELECT 1 FROM TAGLINK_V1 WHERE {where} LIMIT 1", params
+    ).fetchone()
+    if existing is not None:
+        return
+
+    values: dict[str, object] = {tag_col: tag_id, ref_col: mmex_tx_id}
+    if reftype_col:
+        values[reftype_col] = "Transaction"
+    _insert_row_returning_id(conn, "TAGLINK_V1", values, link_id_col)
+
+
+def _apply_tags(
+    conn: sqlite3.Connection, tags: list[str], mmex_tx_id: int
+) -> None:
+    if not tags:
+        return
+    if not _table_exists(conn, "TAG_V1") or not _table_exists(conn, "TAGLINK_V1"):
+        raise MmexSchemaError(
+            "Transaction has tags but MMEX schema is missing TAG_V1/TAGLINK_V1"
+        )
+    seen: set[str] = set()
+    for tag in tags:
+        normalised = tag.strip()
+        if not normalised or normalised in seen:
+            continue
+        seen.add(normalised)
+        tag_id = _resolve_or_create_tag(conn, normalised)
+        _link_tag_to_tx(conn, tag_id, mmex_tx_id)
 
 
 def _amount_value(amount: Decimal) -> str:
