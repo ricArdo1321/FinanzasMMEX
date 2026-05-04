@@ -11,12 +11,12 @@ PARSER_VERSION = "1.0"
 
 _AMOUNT_RE = re.compile(
     r"(?:pagaste|compra(?:ste)?(?:\s+por)?|cargo\s+por)\s+"
-    r"(?P<currency>CLP\s*)?\$?\s*(?P<amount>[0-9][0-9.\s]*)",
+    r"(?P<currency>CLP\s*)?\$?\s*(?P<amount>[0-9][0-9. ]*)",
     re.IGNORECASE,
 )
 _MERCHANT_RE = re.compile(
     r"(?:pagaste|compra(?:ste)?(?:\s+por)?|cargo\s+por)\s+"
-    r"(?:CLP\s*)?\$?\s*[0-9][0-9.\s]*\s+en\s+(?P<merchant>.+?)"
+    r"(?:CLP\s*)?\$?\s*[0-9][0-9. ]*\s+en\s+(?P<merchant>.+?)"
     r"(?:\.\s*(?:\n|$)|\n|$)",
     re.IGNORECASE,
 )

@@ -11,13 +11,13 @@ PARSER_VERSION = "1.0"
 
 _AMOUNT_RE = re.compile(
     r"compra\s+(?:realizada\s+)?(?:por\s+)?(?P<currency>CLP\s*)?\$?\s*"
-    r"(?P<amount>[0-9][0-9.\s]*)",
+    r"(?P<amount>[0-9][0-9. ]*)",
     re.IGNORECASE,
 )
 _MERCHANT_RE = re.compile(
-    r"compra\s+(?:realizada\s+)?(?:por\s+)?(?:CLP\s*)?\$?\s*[0-9][0-9.\s]*\s+en\s+"
+    r"compra\s+(?:realizada\s+)?(?:por\s+)?(?:CLP\s*)?\$?\s*[0-9][0-9. ]*\s+en\s+"
     r"(?P<merchant>.+?)\s+el\s+\d{2}[/-]\d{2}[/-]\d{4}",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 _CARD_RE = re.compile(
     r"tarjeta\s+(?:CMR\s+)?(?:terminada\s+en|\*+)\s*(\d{4})",
