@@ -69,3 +69,4 @@ class CanonicalTx:
 
     # Vinculación de transferencias
     transfer_pair_uid: str | None = None
+    to_account_alias: str | None = None

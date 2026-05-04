@@ -122,3 +122,8 @@ def test_link_is_idempotent() -> None:
     once_pairs = {tx.tx_uid: tx.transfer_pair_uid for tx in once}
     twice_pairs = {tx.tx_uid: tx.transfer_pair_uid for tx in twice}
     assert once_pairs == twice_pairs
+
+
+def test_canonical_tx_default_to_account_alias_is_none() -> None:
+    tx = _tx(direction="debit", account="BE_R")
+    assert tx.to_account_alias is None
