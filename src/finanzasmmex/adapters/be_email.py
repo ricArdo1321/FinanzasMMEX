@@ -18,7 +18,7 @@ _MERCHANT_RE = re.compile(
     r"\s+con\s+cargo\s+(?:a\s+)?(?:la\s+)?(?:cuenta|tarjeta)\s+\*+",
     re.IGNORECASE | re.DOTALL,
 )
-_ACCOUNT_RE = re.compile(r"cuenta\s+\*+(\d{4})", re.IGNORECASE)
+_ACCOUNT_RE = re.compile(r"(?:cuenta|tarjeta)\s+\*+(\d{4})", re.IGNORECASE)
 _DATE_RE = re.compile(
     r"Fecha\s+de\s+la\s+operaci[oó]n:\s*(\d{4}-\d{2}-\d{2})",
     re.IGNORECASE,
@@ -108,10 +108,20 @@ def _clean_text(value: str) -> str:
 
 
 def _account_last4(text: str) -> tuple[str, bool]:
-    matches = sorted(set(_ACCOUNT_RE.findall(text)))
+    matches = _distinct_in_order(_ACCOUNT_RE.findall(text))
     if not matches:
         raise BancoEstadoEmailParseError("Missing BancoEstado field: account")
     return matches[0], len(matches) != 1
+
+
+def _distinct_in_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 def _owner_label(owner: Literal["ricardo", "laura", "joint"]) -> str:

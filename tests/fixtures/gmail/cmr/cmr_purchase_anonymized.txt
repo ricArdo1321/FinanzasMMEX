@@ -1,4 +1,4 @@
-From: notificaciones@example-cmr.cl
+From: notificaciones-cmr@example.com
 To: user-01@example.com
 Subject: Compra realizada con tu Tarjeta CMR
 Date: Sat, 02 May 2026 14:25:00 -0400

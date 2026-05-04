@@ -88,10 +88,7 @@ def test_missing_amount_raises_parse_error() -> None:
 
 
 def test_missing_card_last4_raises_parse_error() -> None:
-    raw_text = (
-        "Pagaste $7.500 en COMERCIO MACH DEMO.\n"
-        "Fecha: 01/05/2026 09:15.\n"
-    )
+    raw_text = "Pagaste $7.500 en COMERCIO MACH DEMO.\n" "Fecha: 01/05/2026 09:15.\n"
     with pytest.raises(MachEmailParseError):
         parse_purchase_email(raw_text)
 
@@ -116,3 +113,19 @@ def test_alternate_date_format_iso_supported() -> None:
     )
     tx = parse_purchase_email(raw_text)
     assert tx.event_date == date(2026, 5, 1)
+
+
+def test_multiple_distinct_cards_marks_review() -> None:
+    raw_text = (
+        "Pagaste CLP $7.500 en COMERCIO MACH DEMO.\n"
+        "Fecha: 01/05/2026 09:15.\n"
+        "Tarjeta Mach **** 9876.\n"
+        "Referencia tarjeta Mach **** 1234.\n"
+        "ID transaccion: MCH-9988.\n"
+    )
+
+    tx = parse_purchase_email(raw_text)
+
+    assert tx.account_alias == "MACH_Ricardo_9876"
+    assert tx.needs_review is True
+    assert "card_ambiguous" in str(tx.review_reason)

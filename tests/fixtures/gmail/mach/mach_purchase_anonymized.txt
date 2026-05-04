@@ -1,4 +1,4 @@
-From: notificaciones@example-mach.cl
+From: notificaciones-mach@example.com
 To: user-01@example.com
 Subject: Realizaste una compra con Mach
 Date: Fri, 01 May 2026 09:15:00 -0400

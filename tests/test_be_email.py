@@ -62,15 +62,30 @@ def test_owner_controls_account_alias() -> None:
     assert tx.account_alias == "BE_Laura_1234"
 
 
-def test_multiple_distinct_accounts_requires_review() -> None:
+def test_tarjeta_reference_controls_account_alias() -> None:
     raw_text = (
         "Se ha realizado una compra por CLP $12.340 en COMERCIO DEMO "
-        "con cargo a la cuenta ****1234 y referencia cuenta ****9876.\n"
+        "con cargo a la tarjeta ****1234.\n"
         "Fecha de la operacion: 2026-05-02.\n"
         "Codigo de autorizacion: TEST-A1."
     )
 
     tx = parse_purchase_email(raw_text)
 
+    assert tx.account_alias == "BE_Ricardo_1234"
+    assert tx.needs_review is False
+
+
+def test_multiple_distinct_accounts_requires_review() -> None:
+    raw_text = (
+        "Se ha realizado una compra por CLP $12.340 en COMERCIO DEMO "
+        "con cargo a la cuenta ****9876 y referencia cuenta ****1234.\n"
+        "Fecha de la operacion: 2026-05-02.\n"
+        "Codigo de autorizacion: TEST-A1."
+    )
+
+    tx = parse_purchase_email(raw_text)
+
+    assert tx.account_alias == "BE_Ricardo_9876"
     assert tx.needs_review is True
     assert "account_ambiguous" in str(tx.review_reason)

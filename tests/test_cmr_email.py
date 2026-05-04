@@ -105,3 +105,19 @@ def test_missing_operation_number_marks_partial_extraction() -> None:
     tx = parse_purchase_email(raw_text)
     assert tx.needs_review is True
     assert "partial_extraction:operation_number" in str(tx.review_reason)
+
+
+def test_multiple_distinct_cards_marks_review() -> None:
+    raw_text = (
+        "Compra por CLP $25.990 en TIENDA DEMO el 02/05/2026 14:25.\n"
+        "Tarjeta CMR terminada en 9876.\n"
+        "Referencia tarjeta CMR terminada en 1234.\n"
+        "Cuotas: 1 sin interes.\n"
+        "Numero de operacion: OP-998877.\n"
+    )
+
+    tx = parse_purchase_email(raw_text)
+
+    assert tx.account_alias == "CMR_Ricardo_9876"
+    assert tx.needs_review is True
+    assert "card_ambiguous" in str(tx.review_reason)
