@@ -10,6 +10,7 @@ from finanzasmmex.writer.mmex_sql import (
     MmexLockedError,
     MmexMappingError,
     MmexSafetyError,
+    MmexSchemaError,
     write_sql,
 )
 
@@ -92,6 +93,17 @@ def create_mmex_db(path) -> None:
                 FIELDID INTEGER NOT NULL,
                 REFID INTEGER NOT NULL,
                 CONTENT TEXT NOT NULL
+            );
+            CREATE TABLE TAG_V1 (
+                TAGID INTEGER PRIMARY KEY,
+                TAGNAME TEXT NOT NULL UNIQUE,
+                ACTIVE INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE TAGLINK_V1 (
+                TAGLINKID INTEGER PRIMARY KEY,
+                REFTYPE TEXT NOT NULL,
+                REFID INTEGER NOT NULL,
+                TAGID INTEGER NOT NULL
             );
             INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME)
             VALUES (10, 'BE_Ricardo_1234');
@@ -310,3 +322,263 @@ def test_write_sql_blocks_when_reconcile_off(tmp_path) -> None:
     assert (
         not backup_dir.exists() or not list(backup_dir.iterdir())
     ), "Refused write must not create backup files"
+
+
+def test_resolve_account_falls_back_to_card_last4(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    # MMEX has the account under a different name; staging alias does not match.
+    with sqlite3.connect(mmex) as conn:
+        conn.execute("DELETE FROM ACCOUNTLIST_V1")
+        conn.execute(
+            "INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME) VALUES (?, ?)",
+            (20, "BE Ricardo Cuenta_1234"),
+        )
+        conn.commit()
+
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash-card",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("12340.00"),
+        direction="debit",
+        account_alias="BE_Ricardo_1234",  # exact lookup will miss
+        card_last4="1234",
+        merchant_raw="COMERCIO DEMO",
+        merchant_norm="COMERCIO DEMO",
+        tx_type="purchase",
+        category_guess="Compras",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-card",
+    )
+    summary = write_sql(
+        [tx],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+    assert summary.items_inserted == 1
+    assert summary.mmex_account_ids[tx.tx_uid] == 20
+
+
+def test_resolve_account_ambiguous_last4_raises(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    with sqlite3.connect(mmex) as conn:
+        conn.execute("DELETE FROM ACCOUNTLIST_V1")
+        conn.executemany(
+            "INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME) VALUES (?, ?)",
+            [(20, "BE_Ricardo_1234"), (21, "BE_Laura_1234")],
+        )
+        conn.commit()
+
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash-amb",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("12340.00"),
+        direction="debit",
+        account_alias="BE_Joint_1234",  # exact miss
+        card_last4="1234",
+        merchant_raw="COMERCIO DEMO",
+        merchant_norm="COMERCIO DEMO",
+        tx_type="purchase",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-amb",
+    )
+    with pytest.raises(MmexMappingError, match="ambiguous by last4"):
+        write_sql(
+            [tx],
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+        )
+
+
+def test_sync_hash_field_collision_raises_schema_error(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    # Pre-existing customfield with case-variant name should block the run
+    # rather than silently create a second sync_hash field.
+    with sqlite3.connect(mmex) as conn:
+        conn.execute(
+            "INSERT INTO CUSTOMFIELD_V1 (FIELDID, REFTYPE, DESCRIPTION) "
+            "VALUES (?, ?, ?)",
+            (50, "Transaction", "Sync_Hash"),
+        )
+        conn.commit()
+
+    with pytest.raises(MmexSchemaError, match="different casing"):
+        write_sql(
+            [make_tx()],
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+        )
+
+
+def test_sync_hash_unique_index_enforces_dedup(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    write_sql(
+        [make_tx(fitid="dup-1")],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+    # The partial UNIQUE INDEX on (FIELDID, CONTENT) must exist and block
+    # any out-of-band manual duplicate insertion of the same sync_hash.
+    with sqlite3.connect(mmex) as conn:
+        field_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert f"uq_finanzasmmex_sync_hash_{field_id}" in indexes
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO CUSTOMFIELDDATA_V1 (FIELDID, REFID, CONTENT) "
+                "VALUES (?, ?, ?)",
+                (field_id, 99, "dup-1"),
+            )
+
+
+def test_apply_tags_links_unique_tags(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash-tags",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("12340.00"),
+        direction="debit",
+        account_alias="BE_Ricardo_1234",
+        merchant_raw="COMERCIO DEMO",
+        merchant_norm="COMERCIO DEMO",
+        tx_type="purchase",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-tags",
+        tags=["joint", "personal", "joint", " "],  # duplicates + blanks
+    )
+    summary = write_sql(
+        [tx],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+    assert summary.items_inserted == 1
+    mmex_tx_id = summary.mmex_tx_ids[tx.tx_uid]
+
+    with sqlite3.connect(mmex) as conn:
+        tags = sorted(
+            row[0]
+            for row in conn.execute(
+                "SELECT TAGNAME FROM TAG_V1 ORDER BY TAGNAME"
+            ).fetchall()
+        )
+        links = conn.execute(
+            "SELECT COUNT(*) FROM TAGLINK_V1 WHERE REFID = ? AND REFTYPE = ?",
+            (mmex_tx_id, "Transaction"),
+        ).fetchone()[0]
+    assert tags == ["joint", "personal"]
+    assert links == 2
+
+
+def test_resolve_account_last4_does_not_match_via_wildcard_underscore(tmp_path) -> None:
+    """LIKE '%_1234' must treat '_' as literal, not as the SQL single-char wildcard.
+
+    Without ESCAPE, an account named 'Productive_finanza_X1234' would match
+    last4='1234' and silently route a tx to the wrong account.
+    """
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    with sqlite3.connect(mmex) as conn:
+        conn.execute("DELETE FROM ACCOUNTLIST_V1")
+        conn.execute(
+            "INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME) VALUES (?, ?)",
+            (30, "DecoyX1234"),
+        )
+        conn.commit()
+
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash-wild",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("12340.00"),
+        direction="debit",
+        account_alias="BE_Ricardo_1234",
+        card_last4="1234",
+        merchant_raw="COMERCIO DEMO",
+        merchant_norm="COMERCIO DEMO",
+        tx_type="purchase",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-wild",
+    )
+    with pytest.raises(MmexMappingError, match="not found"):
+        write_sql(
+            [tx],
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+        )
+
+
+def test_partial_unique_index_recreated_after_field_recreation(tmp_path) -> None:
+    """If MMEX deletes and recreates the sync_hash field, the next run must
+    drop the stale partial index and create a fresh one for the new id.
+    """
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    write_sql(
+        [make_tx(fitid="run-1")],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+
+    with sqlite3.connect(mmex) as conn:
+        old_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
+        # Simulate user deleting the sync_hash field in MMEX (along with
+        # any rows that referenced it) and recreating it with a new id.
+        conn.execute("DELETE FROM CUSTOMFIELDDATA_V1 WHERE FIELDID = ?", (old_id,))
+        conn.execute("DELETE FROM CUSTOMFIELD_V1 WHERE FIELDID = ?", (old_id,))
+        conn.commit()
+
+    write_sql(
+        [make_tx(fitid="run-2")],
+        mmex_db_path=mmex,
+        backup_dir=tmp_path / "backups",
+        allow_shadow_write=True,
+    )
+
+    with sqlite3.connect(mmex) as conn:
+        new_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
+        indexes = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name LIKE 'uq_finanzasmmex_sync_hash%'"
+            ).fetchall()
+        ]
+    # Old per-field index dropped, new one created for new field id.
+    assert f"uq_finanzasmmex_sync_hash_{new_id}" in indexes
+    assert all(name == f"uq_finanzasmmex_sync_hash_{new_id}" for name in indexes), (
+        f"Stale per-field indexes survived: {indexes}"
+    )
