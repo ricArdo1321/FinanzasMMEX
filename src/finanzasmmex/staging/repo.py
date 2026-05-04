@@ -174,6 +174,26 @@ class StagingRepo:
             conn.commit()
             return cursor.rowcount > 0
 
+    def mark_inserted(
+        self,
+        tx_uid: str,
+        *,
+        mmex_account_id: int,
+        mmex_tx_id: int,
+    ) -> bool:
+        sql = """
+        UPDATE canonical_tx
+        SET mmex_status = 'inserted',
+            mmex_account_id = ?,
+            mmex_tx_id = ?,
+            updated_at = datetime('now')
+        WHERE tx_uid = ?
+        """
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(sql, (mmex_account_id, mmex_tx_id, tx_uid))
+            conn.commit()
+            return cursor.rowcount > 0
+
     def get_tx_by_fitid(self, fitid_synthetic: str) -> CanonicalTx | None:
         sql = "SELECT * FROM canonical_tx WHERE fitid_synthetic = ?"
         with closing(self._get_connection()) as conn:
