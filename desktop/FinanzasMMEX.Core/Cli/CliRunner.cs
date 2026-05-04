@@ -21,6 +21,13 @@ public sealed class CliRunnerOptions
     public string? WorkingDirectory { get; init; }
 
     public IReadOnlyDictionary<string, string?>? Environment { get; init; }
+
+    /// <summary>
+    /// Hard cap for a CLI invocation. Read-only commands (review/quickadd) finish
+    /// in well under a second; longer-running ingestion (<c>run</c>) should
+    /// override this via a per-call options override. Default: 30 seconds.
+    /// </summary>
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
 }
 
 public interface ICliRunner
@@ -96,18 +103,52 @@ public sealed class CliRunner : ICliRunner
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linkedCts.CancelAfter(_options.Timeout);
+
+        bool timedOut = false;
         try
         {
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            await process.WaitForExitAsync(linkedCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            try { if (!process.HasExited) process.Kill(true); } catch { /* swallow */ }
-            throw;
+            timedOut = !ct.IsCancellationRequested;
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    // Give the async readers a brief window to drain stderr,
+                    // which usually carries the diagnostic for hung processes.
+                    process.WaitForExit(500);
+                }
+            }
+            catch
+            {
+                // Process already exited or kill raced with exit; swallow.
+            }
+
+            if (!timedOut)
+            {
+                throw;
+            }
         }
 
         var stdout = stdoutBuffer.ToString();
         var stderr = stderrBuffer.ToString();
+        if (timedOut)
+        {
+            return new CliResult(
+                CliExitCode.TemporaryFailure,
+                process.HasExited ? process.ExitCode : -1,
+                Envelope: null,
+                StdOut: stdout,
+                StdErr: stderr.Length > 0
+                    ? stderr
+                    : $"CLI excedió el timeout de {_options.Timeout.TotalSeconds:0}s"
+            );
+        }
         var envelope = CliEnvelopeParser.TryParse(stdout);
         var exitCode = CliExitCodes.FromInt(process.ExitCode);
 

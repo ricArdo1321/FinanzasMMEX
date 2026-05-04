@@ -32,8 +32,9 @@ public static class CliErrorMapper
                 FormatWithDetail(
                     "MMEX está abierto y bloqueando la base; cierre la app y reintente.",
                     detail),
-            CliExitCode.TemporaryFailure =>
-                FormatWithDetail("Falla temporal; reintente en unos segundos.", detail),
+            CliExitCode.TemporaryFailure => FormatWithDetail(
+                BuildTemporaryFailureHeadline(result.RawExitCode),
+                detail),
             _ => FormatWithDetail(
                 $"Código de salida desconocido ({result.RawExitCode}).",
                 detail),
@@ -42,4 +43,9 @@ public static class CliErrorMapper
 
     private static string FormatWithDetail(string headline, string? detail) =>
         string.IsNullOrWhiteSpace(detail) ? headline : $"{headline} {detail}";
+
+    private static string BuildTemporaryFailureHeadline(int rawExitCode) =>
+        rawExitCode == (int)CliExitCode.TemporaryFailure
+            ? "Falla temporal; reintente en unos segundos."
+            : $"Falla temporal (código {rawExitCode}); reintente en unos segundos.";
 }

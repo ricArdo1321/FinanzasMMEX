@@ -354,12 +354,26 @@ def _run_review_update(args: argparse.Namespace) -> NoReturn:
 
     repo.update_tx_fields(args.tx_uid, fields)
     updated_tx = repo.get_tx(args.tx_uid)
-    assert updated_tx is not None  # we just confirmed it exists
+    if updated_tx is None:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "TEMPORARY_FAILURE",
+                    "message": "Transaction disappeared between update and read",
+                    "details": {"tx_uid": args.tx_uid},
+                }
+            ],
+            exit_code=5,
+        )
+    public_fields = sorted(
+        ("tags" if name == "tags_json" else name) for name in fields
+    )
     _emit(
         True,
         data={
             "tx_uid": args.tx_uid,
-            "updated_fields": sorted(fields.keys()),
+            "updated_fields": public_fields,
             "tx": _tx_to_dict(updated_tx),
         },
     )
@@ -423,7 +437,7 @@ def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
     except (InvalidOperation, ValueError) as exc:
         _validation_error(
             f"Invalid amount: {exc}",
-            {"field": "--amount", "value": args.amount},
+            {"field": "--amount", "value": str(args.amount)[:30]},
         )
 
     tx = CanonicalTx(
@@ -449,7 +463,18 @@ def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
         needs_review=False,
     )
     tx = ensure_fitid(tx)
-    assert tx.fitid_synthetic is not None  # ensure_fitid always sets it
+    if tx.fitid_synthetic is None:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "TEMPORARY_FAILURE",
+                    "message": "Failed to compute fitid_synthetic for the transaction",
+                    "details": {},
+                }
+            ],
+            exit_code=5,
+        )
 
     repo = StagingRepo(args.db)
     existing = repo.get_tx_by_fitid(tx.fitid_synthetic)
@@ -712,14 +737,19 @@ def main() -> None:
         "review": review_parser,
         "quickadd": quickadd_parser,
     }
-    if argv in (["-h"], ["--help"]):
-        _emit(True, data={"help": parser.format_help()})
-    if len(argv) >= 2 and argv[-1] in ("-h", "--help") and argv[0] in help_parsers:
-        _emit(True, data={"help": help_parsers[argv[0]].format_help()})
-
-    args = parser.parse_args(argv)
 
     try:
+        if argv in (["-h"], ["--help"]):
+            _emit(True, data={"help": parser.format_help()})
+        if (
+            len(argv) >= 2
+            and argv[-1] in ("-h", "--help")
+            and argv[0] in help_parsers
+        ):
+            _emit(True, data={"help": help_parsers[argv[0]].format_help()})
+
+        args = parser.parse_args(argv)
+
         if args.command == "init":
             schema_path = Path(args.schema)
             if not schema_path.is_file():

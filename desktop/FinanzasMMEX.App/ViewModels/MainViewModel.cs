@@ -1,8 +1,9 @@
+using FinanzasMMEX.App.Mvvm;
 using FinanzasMMEX.Core.Cli;
 
 namespace FinanzasMMEX.App.ViewModels;
 
-public sealed class MainViewModel
+public sealed class MainViewModel : ViewModelBase
 {
     public MainViewModel(ICliRunner runner)
     {

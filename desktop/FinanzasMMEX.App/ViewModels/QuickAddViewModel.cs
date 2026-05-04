@@ -98,7 +98,7 @@ public sealed class QuickAddViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Error inesperado: {ex.Message}";
+            StatusMessage = UnexpectedErrorMessages.Describe(ex);
         }
         finally
         {

@@ -117,8 +117,12 @@ def test_review_update_applies_fields(tmp_path: Path) -> None:
     )
     payload = parse(result)
     assert result.returncode == 0, result.stdout
-    assert "category_guess" in payload["data"]["updated_fields"]
-    assert "needs_review" in payload["data"]["updated_fields"]
+    updated_fields = payload["data"]["updated_fields"]
+    assert "category_guess" in updated_fields
+    assert "needs_review" in updated_fields
+    # Public field name "tags" must surface, never the internal "tags_json".
+    assert "tags" in updated_fields
+    assert "tags_json" not in updated_fields
     assert payload["data"]["tx"]["category_guess"] == "Cafes"
     assert payload["data"]["tx"]["needs_review"] is True
     assert payload["data"]["tx"]["tags"] == ["joint", "personal"]
