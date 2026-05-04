@@ -1,12 +1,29 @@
-import shutil
+"""Direct SQL writer to a Money Manager Ex .mmb database.
+
+Safety contract (Phase 2 hard rules; see CLAUDE.md "Writer modes"):
+- Productive `finanza.mmb` MUST never be written by this module. The path
+  guard rejects exact and disguised productive names.
+- A connection MUST be transactional (BEGIN IMMEDIATE / COMMIT / ROLLBACK)
+  with timeout=0 so an MMEX-held write lock is detected immediately as
+  MmexLockedError (mappable to CLI exit code 4).
+- Pre/post backups MUST be taken via the SQLite Online Backup API (safe
+  against a concurrent writer), under a backup directory that is rotated
+  to keep the last 30 days only.
+- A batch with reconcile_log.status='off' for any account in the batch
+  MUST block the writer.
+"""
+
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from ..models import CanonicalTx
+from ..staging.repo import StagingRepo
+
+_BACKUP_RETENTION_DAYS = 30
 
 
 class MmexSqlError(Exception):
@@ -63,6 +80,7 @@ def write_sql(
     mmex_db_path: str | Path,
     backup_dir: str | Path,
     allow_shadow_write: bool = False,
+    staging_repo: StagingRepo | None = None,
 ) -> SqlWriteSummary:
     txs = list(transactions)
     mmex_path = _safe_mmex_db_path(mmex_db_path, allow_shadow_write)
@@ -85,14 +103,32 @@ def write_sql(
             backup_post_path=None,
         )
 
+    if staging_repo is not None:
+        aliases = {tx.account_alias for tx in eligible}
+        if staging_repo.has_reconcile_off(aliases):
+            raise MmexSafetyError(
+                "Refusing to write: at least one account in the batch has "
+                "reconcile_log.status='off'"
+            )
+
+    # Probe for MMEX-held lock FIRST so we surface MmexLockedError before
+    # any file-system side effect (a hung MMEX should not also create a
+    # backup file).
     _assert_not_locked(mmex_path)
-    pre_backup = _backup(mmex_path, backup_dir, "pre")
+    # Pre-backup runs on a separate read-only connection. The SQLite Online
+    # Backup API is safe even if MMEX re-opens between the probe and here —
+    # it serialises pages through SQLite's locking instead of shutil.copy2.
+    pre_backup_path: Path | None = _safe_backup(mmex_path, backup_dir, "pre")
     inserted: dict[str, int] = {}
     inserted_accounts: dict[str, int] = {}
     duplicates = 0
 
     conn = _connect(mmex_path)
     try:
+        # BEGIN IMMEDIATE: an MMEX-held lock surfaces here as MmexLockedError
+        # mapped to CLI exit code 4. The TOCTOU window between pre-backup
+        # and BEGIN IMMEDIATE is bounded by the backup step; if MMEX grabbed
+        # the lock between, we never reach insert and never need to undo.
         _begin_immediate(conn)
         _ensure_required_schema(conn)
         sync_field_id = _ensure_sync_hash_field(conn)
@@ -140,7 +176,14 @@ def write_sql(
     finally:
         conn.close()
 
-    post_backup = _backup(mmex_path, backup_dir, "post")
+    # Post-backup must not undo a successful commit. If it fails the run
+    # is still successful, but the caller is told via a missing path.
+    post_backup_path: str | None
+    try:
+        post_backup_path = str(_safe_backup(mmex_path, backup_dir, "post"))
+    except OSError:
+        post_backup_path = None
+
     return SqlWriteSummary(
         items_considered=len(txs),
         items_inserted=len(inserted),
@@ -148,27 +191,44 @@ def write_sql(
         items_rejected_review=rejected_review,
         items_rejected_unsupported=rejected_unsupported,
         mmex_path=str(mmex_path),
-        backup_pre_path=str(pre_backup),
-        backup_post_path=str(post_backup),
+        backup_pre_path=str(pre_backup_path) if pre_backup_path else None,
+        backup_post_path=post_backup_path,
         mmex_tx_ids=inserted,
         mmex_account_ids=inserted_accounts,
     )
+
+
+_SHADOW_TOKENS = ("test", "shadow", "demo")
 
 
 def _safe_mmex_db_path(
     mmex_db_path: str | Path,
     allow_shadow_write: bool,
 ) -> Path:
-    path = Path(mmex_db_path).expanduser().resolve(strict=False)
-    if path.suffix.lower() == ".emb":
+    raw_path = Path(mmex_db_path).expanduser()
+    # resolve(strict=False) collapses ".." and normalises casing on disk where
+    # possible; we still defend against names crafted to look like shadow files.
+    path = raw_path.resolve(strict=False)
+    suffix = path.suffix.lower()
+    stem_lower = path.stem.lower()
+    name_lower = path.name.lower()
+
+    if suffix == ".emb":
         raise MmexSafetyError("Encrypted .emb MMEX files are not writable in Phase 2")
-    if path.suffix.lower() != ".mmb":
+    if suffix != ".mmb":
         raise MmexSafetyError("SQL writer target must be a .mmb database")
-    if path.name.lower() == "finanza.mmb":
-        raise MmexSafetyError("Refusing to write productive finanza.mmb in Phase 2")
+
+    has_shadow_token = any(token in stem_lower for token in _SHADOW_TOKENS)
+    looks_productive = name_lower == "finanza.mmb" or (
+        stem_lower.startswith("finanza") and not has_shadow_token
+    )
+    if looks_productive:
+        raise MmexSafetyError(
+            "Refusing to write productive finanza*.mmb path in Phase 2"
+        )
     if not allow_shadow_write:
         raise MmexSafetyError("SQL writer requires explicit shadow/test write flag")
-    if not any(token in path.stem.lower() for token in ("test", "shadow", "demo")):
+    if not has_shadow_token:
         raise MmexSafetyError("SQL writer target must be a test/shadow .mmb path")
     if not path.is_file():
         raise MmexSafetyError("SQL writer target .mmb does not exist")
@@ -179,17 +239,77 @@ def _unsupported_for_sql(tx: CanonicalTx) -> bool:
     return tx.tx_type in {"transfer_in", "transfer_out", "internal_transfer"}
 
 
-def _backup(mmex_path: Path, backup_dir: str | Path, kind: str) -> Path:
+def _safe_backup(mmex_path: Path, backup_dir: str | Path, kind: str) -> Path:
+    """Take a transactionally consistent backup via the SQLite Online Backup API.
+
+    Unlike a raw file copy, this is safe even if MMEX is reading the file
+    concurrently because the API serialises pages through SQLite's locking.
+    Used for the post-write backup with a fresh read connection.
+    """
+    src = sqlite3.connect(mmex_path, timeout=0)
+    try:
+        return _safe_backup_via_conn(src, mmex_path, backup_dir, kind)
+    finally:
+        src.close()
+
+
+def _safe_backup_via_conn(
+    src: sqlite3.Connection,
+    mmex_path: Path,
+    backup_dir: str | Path,
+    kind: str,
+) -> Path:
+    """Backup using an existing connection (used inside the writer transaction)."""
     out_dir = Path(backup_dir).expanduser().resolve(strict=False)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     out_path = out_dir / f"{mmex_path.stem}.{stamp}.{kind}.mmb"
-    shutil.copy2(mmex_path, out_path)
+    if out_path.exists():
+        # Microsecond clash should be vanishingly rare; bail loud rather than
+        # overwrite an existing backup file.
+        raise OSError(f"Backup target already exists: {out_path}")
+
+    dst = sqlite3.connect(out_path)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+
+    _prune_old_backups(out_dir, mmex_path.stem)
     return out_path
+
+
+def _prune_old_backups(backup_dir: Path, stem: str) -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_BACKUP_RETENTION_DAYS)
+    cutoff_ts = cutoff.timestamp()
+    for entry in backup_dir.glob(f"{stem}.*.mmb"):
+        try:
+            if entry.stat().st_mtime < cutoff_ts:
+                entry.unlink()
+        except OSError:
+            # Best-effort prune; never break the writer for cleanup issues.
+            continue
+
+
+def _assert_not_locked(mmex_path: Path) -> None:
+    """Probe MMEX for a write lock and surface MmexLockedError immediately.
+
+    Done before pre-backup and main BEGIN IMMEDIATE so a busy MMEX never
+    triggers any file-system side effect.
+    """
+    conn = _connect(mmex_path)
+    try:
+        _begin_immediate(conn)
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def _connect(mmex_path: Path) -> sqlite3.Connection:
     try:
+        # Autocommit mode + explicit BEGIN IMMEDIATE: every statement after
+        # BEGIN IMMEDIATE participates in the same transaction until COMMIT
+        # or ROLLBACK. timeout=0 keeps lock detection instant.
         conn = sqlite3.connect(mmex_path, timeout=0, isolation_level=None)
     except sqlite3.OperationalError as exc:
         if _is_locked(exc):
@@ -200,13 +320,6 @@ def _connect(mmex_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _assert_not_locked(mmex_path: Path) -> None:
-    conn = _connect(mmex_path)
-    try:
-        _begin_immediate(conn)
-        conn.rollback()
-    finally:
-        conn.close()
 
 
 def _begin_immediate(conn: sqlite3.Connection) -> None:

@@ -234,3 +234,79 @@ def test_write_sql_reports_locked_database(tmp_path) -> None:
     finally:
         locker.rollback()
         locker.close()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Finanza.mmb",
+        "FINANZA.MMB",
+        "finanza_backup.mmb",
+        "Finanza_2026.mmb",
+        "finanza.MMB",
+    ],
+)
+def test_write_sql_rejects_disguised_productive_names(tmp_path, name) -> None:
+    target = tmp_path / name
+    target.touch()
+    with pytest.raises(MmexSafetyError, match="productive"):
+        write_sql(
+            [make_tx()],
+            mmex_db_path=target,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+        )
+
+
+def test_write_sql_blocks_when_reconcile_off(tmp_path) -> None:
+    from finanzasmmex.staging.repo import StagingRepo
+
+    schema = Path("src/finanzasmmex/staging/schema.sql")
+    staging_db = tmp_path / "staging.db"
+    repo = StagingRepo(str(staging_db))
+    repo.init_db(str(schema))
+    with sqlite3.connect(staging_db) as sconn:
+        sconn.execute(
+            """
+            INSERT INTO reconcile_log (
+                account_alias, period_start, period_end,
+                balance_initial, balance_final,
+                sum_credits, sum_debits, expected_final,
+                status, delta
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "BE_Ricardo_1234",
+                "2026-04-01",
+                "2026-04-30",
+                0.0,
+                100.0,
+                100.0,
+                0.0,
+                100.0,
+                "off",
+                0.0,
+            ),
+        )
+        sconn.commit()
+
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    with pytest.raises(MmexSafetyError, match="reconcile_log"):
+        write_sql(
+            [make_tx()],
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+            staging_repo=repo,
+        )
+
+    with sqlite3.connect(mmex) as conn:
+        tx_count = conn.execute(
+            "SELECT COUNT(*) FROM CHECKINGACCOUNT_V1"
+        ).fetchone()[0]
+    assert tx_count == 0
+    backup_dir = tmp_path / "backups"
+    assert (
+        not backup_dir.exists() or not list(backup_dir.iterdir())
+    ), "Refused write must not create backup files"
