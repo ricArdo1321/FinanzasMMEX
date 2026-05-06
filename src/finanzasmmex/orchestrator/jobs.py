@@ -161,6 +161,64 @@ def run_gmail_mach_to_ofx(
     )
 
 
+def run_gmail_all_to_ofx(
+    *,
+    input_path: str,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+) -> RunSummary:
+    from ..adapters.be_email import parse_purchase_email as parse_be
+    from ..adapters.cmr_email import parse_purchase_email as parse_cmr
+    from ..adapters.mach_email import parse_purchase_email as parse_mach
+
+    repo = StagingRepo(db_path)
+    _ensure_db(repo, Path(db_path), schema_path)
+
+    base = Path(input_path)
+    sources: list[tuple[Callable[..., CanonicalTx], str, Path]] = [
+        (parse_be, "BancoEstado", base),
+        (parse_cmr, "CMR", base / "cmr"),
+        (parse_mach, "Mach", base / "mach"),
+    ]
+
+    all_transactions: list[CanonicalTx] = []
+    for parser_fn, _name, source_path in sources:
+        if not source_path.is_dir():
+            continue
+        files = _collect_email_files(source_path)
+        if not files:
+            continue
+        for file_path in files:
+            raw_text = file_path.read_text(encoding="utf-8")
+            try:
+                parsed = parser_fn(raw_text, source_file=str(file_path))
+            except ValueError:
+                continue
+            tx = prepare_for_staging(parsed)
+            repo.upsert_tx(tx)
+            all_transactions.append(tx)
+
+    if not all_transactions:
+        raise ValueError("No email input files found for any Gmail source")
+
+    if repo.has_reconcile_off({tx.account_alias for tx in all_transactions}):
+        raise ValueError("Cannot export OFX while reconcile status is off")
+
+    ofx_path = write_ofx(all_transactions, ofx_output_path)
+    report_path = write_review_report(all_transactions, report_output_path)
+
+    return RunSummary(
+        items_processed=len(all_transactions),
+        items_inserted=len(all_transactions),
+        items_review=sum(1 for tx in all_transactions if tx.needs_review),
+        db_path=db_path,
+        ofx_path=str(ofx_path),
+        report_path=str(report_path),
+    )
+
+
 def _run_email_job(
     *,
     input_path: str,

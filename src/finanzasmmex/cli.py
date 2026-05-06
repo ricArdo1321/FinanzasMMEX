@@ -13,6 +13,7 @@ from .etl.normalize import parse_clp_amount
 from .models import CanonicalTx
 from .orchestrator.jobs import (
     RunSummary,
+    run_gmail_all_to_ofx,
     run_gmail_bancoestado_to_ofx,
     run_gmail_cmr_to_ofx,
     run_gmail_mach_to_ofx,
@@ -176,6 +177,45 @@ def _run_gmail(args: argparse.Namespace) -> NoReturn:
         True,
         data={
             "message": f"Gmail {source_label} ingestion completed",
+            "source": args.source,
+            "writer": args.writer,
+            **result.as_dict(),
+        },
+    )
+
+
+def _run_gmail_all(args: argparse.Namespace) -> NoReturn:
+    if not args.input:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "CREDENTIALS_REQUIRED",
+                    "message": (
+                        "Gmail OAuth credentials are not configured; "
+                        "use --input for offline ingestion"
+                    ),
+                    "details": {
+                        "source": args.source,
+                        "offline_flag": "--input",
+                        "login_command": "finanzasmmex login --source gmail",
+                    },
+                }
+            ],
+            exit_code=3,
+        )
+
+    result = run_gmail_all_to_ofx(
+        input_path=args.input,
+        db_path=args.db,
+        schema_path=args.schema,
+        ofx_output_path=args.ofx_output,
+        report_output_path=args.report_output,
+    )
+    _emit(
+        True,
+        data={
+            "message": "Gmail all sources ingestion completed",
             "source": args.source,
             "writer": args.writer,
             **result.as_dict(),
@@ -911,14 +951,14 @@ def main() -> None:
             if args.writer == "sql":
                 _run_sql(args)
             else:
-                if args.source not in {"gmail", "mp"}:
+                if args.source not in {"gmail", "mp", "all"}:
                     _emit(
                         False,
                         errors=[
                             {
                                 "code": "VALIDATION_ERROR",
                                 "message": (
-                                    "Only gmail and mp sources are implemented "
+                                    "Only gmail, mp, and all sources are implemented "
                                     "in this cut"
                                 ),
                                 "details": {"source": args.source},
@@ -929,6 +969,8 @@ def main() -> None:
 
                 if args.source == "gmail":
                     _run_gmail(args)
+                elif args.source == "all":
+                    _run_gmail_all(args)
                 else:
                     _run_mp(args)
         elif args.command == "login":

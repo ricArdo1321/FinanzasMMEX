@@ -53,4 +53,5 @@ temp_pdf_read/
 Thumbs.db
 
 # Functional test artifacts (Windows-style paths created on Linux)
-C:/*
+/C:*
+/C:*/*

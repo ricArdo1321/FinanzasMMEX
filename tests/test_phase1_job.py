@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from finanzasmmex.orchestrator.jobs import (
+    run_gmail_all_to_ofx,
     run_gmail_bancoestado_to_ofx,
     run_gmail_cmr_to_ofx,
     run_gmail_mach_to_ofx,
@@ -117,6 +118,67 @@ def test_gmail_mach_to_ofx_is_idempotent(tmp_path) -> None:
 
     assert count == 1
     assert fitid_count == 1
+
+
+def test_gmail_all_to_ofx_processes_all_sources(tmp_path) -> None:
+    db_path = tmp_path / "staging.db"
+    ofx_path = tmp_path / "out" / "all.ofx"
+    report_path = tmp_path / "reports" / "review.html"
+
+    kwargs = {
+        "input_path": str(ROOT / "tests" / "fixtures" / "gmail"),
+        "db_path": str(db_path),
+        "schema_path": str(ROOT / "src" / "finanzasmmex" / "staging" / "schema.sql"),
+        "ofx_output_path": str(ofx_path),
+        "report_output_path": str(report_path),
+    }
+
+    result = run_gmail_all_to_ofx(**kwargs)
+
+    assert result.items_processed == 3
+    assert report_path.is_file()
+    # Multi-account: one OFX per account alias
+    ofx_dir = ofx_path.parent
+    ofx_files = list(ofx_dir.glob("*.ofx"))
+    assert len(ofx_files) == 3
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "COMERCIO DEMO" in report_text
+    assert "TIENDA DEMO" in report_text
+    assert "COMERCIO MACH DEMO" in report_text
+
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM canonical_tx").fetchone()[0]
+        fitid_count = conn.execute(
+            "SELECT COUNT(DISTINCT fitid_synthetic) FROM canonical_tx"
+        ).fetchone()[0]
+
+    assert count == 3
+    assert fitid_count == 3
+
+
+def test_gmail_all_to_ofx_is_idempotent(tmp_path) -> None:
+    db_path = tmp_path / "staging.db"
+    ofx_path = tmp_path / "out" / "all.ofx"
+    report_path = tmp_path / "reports" / "review.html"
+
+    kwargs = {
+        "input_path": str(ROOT / "tests" / "fixtures" / "gmail"),
+        "db_path": str(db_path),
+        "schema_path": str(ROOT / "src" / "finanzasmmex" / "staging" / "schema.sql"),
+        "ofx_output_path": str(ofx_path),
+        "report_output_path": str(report_path),
+    }
+
+    first = run_gmail_all_to_ofx(**kwargs)
+    second = run_gmail_all_to_ofx(**kwargs)
+
+    assert first.items_processed == 3
+    assert second.items_processed == 3
+
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM canonical_tx").fetchone()[0]
+
+    assert count == 3
 
 
 def test_review_report_rejects_mmex_database_paths(tmp_path) -> None:
