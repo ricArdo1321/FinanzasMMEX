@@ -3,7 +3,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NoReturn
@@ -12,7 +12,11 @@ from .etl.fitid import ensure_fitid
 from .etl.normalize import parse_clp_amount
 from .models import CanonicalTx
 from .orchestrator.jobs import (
+    RunSummary,
     run_gmail_bancoestado_to_ofx,
+    run_gmail_cmr_to_ofx,
+    run_gmail_mach_to_ofx,
+    run_mp_online,
     run_mp_to_ofx,
     run_pending_to_sql,
 )
@@ -147,7 +151,21 @@ def _run_gmail(args: argparse.Namespace) -> NoReturn:
             ],
             exit_code=3,
         )
-    result = run_gmail_bancoestado_to_ofx(
+
+    source_label: str
+    from collections.abc import Callable
+    runner: Callable[..., RunSummary]
+    if args.gmail_source == "cmr":
+        source_label = "CMR"
+        runner = run_gmail_cmr_to_ofx
+    elif args.gmail_source == "mach":
+        source_label = "Mach"
+        runner = run_gmail_mach_to_ofx
+    else:
+        source_label = "BancoEstado"
+        runner = run_gmail_bancoestado_to_ofx
+
+    result = runner(
         input_path=args.input,
         db_path=args.db,
         schema_path=args.schema,
@@ -157,7 +175,7 @@ def _run_gmail(args: argparse.Namespace) -> NoReturn:
     _emit(
         True,
         data={
-            "message": "BancoEstado Gmail ingestion completed",
+            "message": f"Gmail {source_label} ingestion completed",
             "source": args.source,
             "writer": args.writer,
             **result.as_dict(),
@@ -184,7 +202,8 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
             },
         )
 
-    if _read_vault_secret(MP_VAULT_KEY) is None:
+    token = os.environ.get(MP_TOKEN_ENV) or _read_vault_secret(MP_VAULT_KEY)
+    if token is None:
         _emit(
             False,
             errors=[
@@ -204,19 +223,35 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
             exit_code=3,
         )
 
+    begin_date = args.begin_date
+    end_date = args.end_date
+    today = date.today()
+    if begin_date is None:
+        begin_date = (today - timedelta(days=7)).isoformat()
+    else:
+        _parse_iso_date(begin_date, "--begin-date")  # validate format
+    if end_date is None:
+        end_date = today.isoformat()
+    else:
+        _parse_iso_date(end_date, "--end-date")  # validate format
+
+    result = run_mp_online(
+        access_token=token,
+        begin_date=begin_date,
+        end_date=end_date,
+        db_path=args.db,
+        schema_path=args.schema,
+        ofx_output_path=args.ofx_output,
+        report_output_path=args.report_output,
+    )
     _emit(
-        False,
-        errors=[
-            {
-                "code": "TEMPORARY_FAILURE",
-                "message": (
-                    "Mercado Pago online ingestion is not wired in this cut; "
-                    "use --input <path> for offline mode"
-                ),
-                "details": {"source": args.source},
-            }
-        ],
-        exit_code=5,
+        True,
+        data={
+            "message": "Mercado Pago online ingestion completed",
+            "source": args.source,
+            "writer": args.writer,
+            **result.as_dict(),
+        },
     )
 
 
@@ -654,9 +689,24 @@ def main() -> None:
     run_parser.add_argument(
         "--input",
         help=(
-            "Path to a BancoEstado email file or directory "
-            "for offline Gmail ingestion"
+            "Path to email file or directory for offline Gmail ingestion"
         ),
+    )
+    run_parser.add_argument(
+        "--gmail-source",
+        choices=["be", "cmr", "mach"],
+        default="be",
+        help="Gmail sub-source: be (BancoEstado), cmr, mach (default: be)",
+    )
+    run_parser.add_argument(
+        "--begin-date",
+        default=None,
+        help="ISO date YYYY-MM-DD for MP online search start (default: 7 days ago)",
+    )
+    run_parser.add_argument(
+        "--end-date",
+        default=None,
+        help="ISO date YYYY-MM-DD for MP online search end (default: today)",
     )
     run_parser.add_argument(
         "--db", default=DEFAULT_STAGING_DB, help="Path to staging.db"

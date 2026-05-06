@@ -69,3 +69,19 @@ mantienen sus campos existentes cuando se pasan rutas explicitas.
 ### Breaking changes
 
 Ninguno. `init`, `run`, `login` mantienen su contrato exacto.
+
+## 2026-05-06 — CMR + Mach email parsers
+
+### Added
+
+- `run --source gmail` ahora acepta `--gmail-source {be,cmr,mach}` (default: `be`).
+  - `be`: BancoEstado (comportamiento histórico, sin cambios).
+  - `cmr`: CMR email parser (`run_gmail_cmr_to_ofx`).
+  - `mach`: Mach email parser (`run_gmail_mach_to_ofx`).
+- `data.message` varía según `--gmail-source`: `"Gmail BancoEstado ingestion completed"`,
+  `"Gmail CMR ingestion completed"`, `"Gmail Mach ingestion completed"`.
+
+### Breaking changes
+
+Ninguno. `--gmail-source` es opcional con default `be`, completamente
+backward-compatible. El contrato del envelope no cambia.
