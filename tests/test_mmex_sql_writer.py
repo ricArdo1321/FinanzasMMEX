@@ -2,6 +2,7 @@ import sqlite3
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -41,10 +42,11 @@ def make_tx(
     )
 
 
-def make_transfer_pair(
-    *, pair_uid: str = "pair-001"
-) -> tuple[CanonicalTx, CanonicalTx]:
+def make_transfer_pair() -> tuple[CanonicalTx, CanonicalTx]:
+    debit_uid = str(uuid4())
+    credit_uid = str(uuid4())
     debit = CanonicalTx(
+        tx_uid=debit_uid,
         owner="ricardo",
         source_type="email",
         source_ref="TRF-1",
@@ -60,9 +62,10 @@ def make_transfer_pair(
         parser_name="be_email_v1",
         parser_version="1.0",
         fitid_synthetic="fitid-debit-001",
-        transfer_pair_uid=pair_uid,
+        transfer_pair_uid=credit_uid,
     )
     credit = CanonicalTx(
+        tx_uid=credit_uid,
         owner="ricardo",
         source_type="email",
         source_ref="TRF-2",
@@ -78,7 +81,7 @@ def make_transfer_pair(
         parser_name="be_email_v1",
         parser_version="1.0",
         fitid_synthetic="fitid-credit-001",
-        transfer_pair_uid=pair_uid,
+        transfer_pair_uid=debit_uid,
     )
     return debit, credit
 

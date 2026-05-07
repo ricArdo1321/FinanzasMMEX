@@ -288,20 +288,32 @@ def _build_transfer_index(
 
     Returns:
     - credit_skip: tx_uids of credit legs whose debit counterpart is in this batch
-    - pair_to_credit_uid: transfer_pair_uid → credit leg tx_uid (complete pairs only)
+    - pair_to_credit_uid: debit leg partner_tx_uid → credit leg tx_uid (for summary)
     """
-    debit_by_pair: dict[str, CanonicalTx] = {}
-    credit_by_pair: dict[str, CanonicalTx] = {}
+    debit_by_pair: dict[tuple[str, str], CanonicalTx] = {}
+    credit_by_pair: dict[tuple[str, str], CanonicalTx] = {}
     for tx in eligible:
         if tx.tx_type != "internal_transfer" or not tx.transfer_pair_uid:
             continue
+
+        # Stable key for the pair regardless of which leg we look at
+        pair_key = tuple(sorted([tx.tx_uid, tx.transfer_pair_uid]))
+
         if tx.direction == "debit" and tx.to_account_alias:
-            debit_by_pair[tx.transfer_pair_uid] = tx
+            debit_by_pair[pair_key] = tx
         elif tx.direction == "credit":
-            credit_by_pair[tx.transfer_pair_uid] = tx
-    complete = set(debit_by_pair) & set(credit_by_pair)
-    credit_skip = {credit_by_pair[uid].tx_uid for uid in complete}
-    pair_to_credit_uid = {uid: credit_by_pair[uid].tx_uid for uid in complete}
+            credit_by_pair[pair_key] = tx
+
+    complete_keys = set(debit_by_pair) & set(credit_by_pair)
+    credit_skip = {credit_by_pair[key].tx_uid for key in complete_keys}
+    
+    # Map debit's partner_tx_uid (which is the credit's tx_uid) 
+    # to the actual credit tx_uid. This is redundant but kept for clarity 
+    # in the loop that uses tx.transfer_pair_uid.
+    pair_to_credit_uid = {
+        debit_by_pair[key].transfer_pair_uid: credit_by_pair[key].tx_uid 
+        for key in complete_keys
+    }
     return credit_skip, pair_to_credit_uid
 
 

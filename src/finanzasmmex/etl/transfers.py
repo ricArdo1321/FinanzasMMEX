@@ -29,11 +29,10 @@ def link_internal_transfers(txs: Iterable[CanonicalTx]) -> list[CanonicalTx]:
                 continue
             if not _is_pair(tx_a, tx_b):
                 continue
-            pair_uid = tx_a.transfer_pair_uid or tx_b.transfer_pair_uid or str(uuid4())
-            paired[tx_a.tx_uid] = pair_uid
-            paired[tx_b.tx_uid] = pair_uid
             to_alias[tx_a.tx_uid] = tx_b.account_alias
             to_alias[tx_b.tx_uid] = tx_a.account_alias
+            paired[tx_a.tx_uid] = tx_b.tx_uid
+            paired[tx_b.tx_uid] = tx_a.tx_uid
             consumed.add(tx_a.tx_uid)
             consumed.add(tx_b.tx_uid)
             break

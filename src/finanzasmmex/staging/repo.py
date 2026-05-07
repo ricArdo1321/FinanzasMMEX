@@ -27,6 +27,9 @@ class StagingRepo:
             conn.commit()
 
     def upsert_tx(self, tx: CanonicalTx) -> None:
+        self.upsert_batch([tx])
+
+    def upsert_batch(self, txs: Iterable[CanonicalTx]) -> None:
         sql = """
         INSERT INTO canonical_tx (
             tx_uid, owner, source_type, source_file, source_ref,
@@ -46,41 +49,60 @@ class StagingRepo:
             mmex_status = excluded.mmex_status,
             updated_at = datetime('now')
         """
-        params = (
-            tx.tx_uid,
-            tx.owner,
-            tx.source_type,
-            tx.source_file,
-            tx.source_ref,
-            tx.content_sha256,
-            tx.raw_text,
-            tx.event_date.isoformat() if tx.event_date else None,
-            tx.booking_date.isoformat() if tx.booking_date else None,
-            tx.posted_date.isoformat() if tx.posted_date else None,
-            float(tx.amount),
-            tx.currency,
-            tx.direction,
-            tx.account_alias,
-            tx.card_last4,
-            tx.merchant_raw,
-            tx.merchant_norm,
-            tx.tx_type,
-            tx.category_guess,
-            tx.subcategory_guess,
-            json.dumps(tx.tags),
-            tx.fitid_synthetic,
-            tx.parser_name,
-            tx.parser_version,
-            1 if tx.needs_review else 0,
-            tx.review_reason,
-            tx.mmex_account_id,
-            tx.mmex_tx_id,
-            tx.mmex_status,
-            tx.transfer_pair_uid,
-            tx.to_account_alias,
-        )
+        
+        batch_params = []
+        for tx in txs:
+            params = (
+                tx.tx_uid,
+                tx.owner,
+                tx.source_type,
+                tx.source_file,
+                tx.source_ref,
+                tx.content_sha256,
+                tx.raw_text,
+                tx.event_date.isoformat() if tx.event_date else None,
+                tx.booking_date.isoformat() if tx.booking_date else None,
+                tx.posted_date.isoformat() if tx.posted_date else None,
+                float(tx.amount),
+                tx.currency,
+                tx.direction,
+                tx.account_alias,
+                tx.card_last4,
+                tx.merchant_raw,
+                tx.merchant_norm,
+                tx.tx_type,
+                tx.category_guess,
+                tx.subcategory_guess,
+                json.dumps(tx.tags),
+                tx.fitid_synthetic,
+                tx.parser_name,
+                tx.parser_version,
+                1 if tx.needs_review else 0,
+                tx.review_reason,
+                tx.mmex_account_id,
+                tx.mmex_tx_id,
+                tx.mmex_status,
+                tx.transfer_pair_uid,
+                tx.to_account_alias,
+            )
+            batch_params.append(params)
+
         with closing(self._get_connection()) as conn:
-            conn.execute(sql, params)
+            # Disable FKs during batch upsert to allow circular transfer references
+            # (leg A points to leg B which is also being inserted).
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.executemany(sql, batch_params)
+            
+            # Ensure integrity before committing
+            violations = conn.execute("PRAGMA foreign_key_check(canonical_tx)").fetchall()
+            if violations:
+                # Row shape: (table, rowid, parent_table, fkid)
+                v = violations[0]
+                raise sqlite3.IntegrityError(
+                    f"Foreign key constraint failed in {v[0]} rowid {v[1]} "
+                    f"referencing {v[2]}"
+                )
+            
             conn.commit()
 
     def get_pending_txs(self) -> List[CanonicalTx]:

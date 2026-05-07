@@ -40,7 +40,8 @@ def test_link_pairs_opposite_direction_same_amount_same_date() -> None:
     b = _tx(direction="credit", account="MACH_R", tx_type="transfer_in", tx_uid="b")
     out = link_internal_transfers([a, b])
     by_uid = {tx.tx_uid: tx for tx in out}
-    assert by_uid["a"].transfer_pair_uid == by_uid["b"].transfer_pair_uid
+    assert by_uid["a"].transfer_pair_uid == "b"
+    assert by_uid["b"].transfer_pair_uid == "a"
     assert by_uid["a"].transfer_pair_uid is not None
     assert by_uid["a"].tx_type == "internal_transfer"
     assert by_uid["b"].tx_type == "internal_transfer"
@@ -85,7 +86,8 @@ def test_link_pairs_within_one_day_window() -> None:
     out = link_internal_transfers([a, b])
     by_uid = {tx.tx_uid: tx for tx in out}
     assert by_uid["a"].transfer_pair_uid is not None
-    assert by_uid["a"].transfer_pair_uid == by_uid["b"].transfer_pair_uid
+    assert by_uid["a"].transfer_pair_uid == "b"
+    assert by_uid["b"].transfer_pair_uid == "a"
 
 
 def test_link_skips_pairs_outside_window() -> None:

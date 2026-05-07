@@ -172,6 +172,7 @@ def run_gmail_all_to_ofx(
     from ..adapters.be_email import parse_purchase_email as parse_be
     from ..adapters.cmr_email import parse_purchase_email as parse_cmr
     from ..adapters.mach_email import parse_purchase_email as parse_mach
+    from ..etl.pipeline import prepare_batch_for_staging
 
     repo = StagingRepo(db_path)
     _ensure_db(repo, Path(db_path), schema_path)
@@ -183,7 +184,7 @@ def run_gmail_all_to_ofx(
         (parse_mach, "Mach", base / "mach"),
     ]
 
-    all_transactions: list[CanonicalTx] = []
+    parsed_items: list[CanonicalTx] = []
     for parser_fn, _name, source_path in sources:
         if not source_path.is_dir():
             continue
@@ -194,14 +195,18 @@ def run_gmail_all_to_ofx(
             raw_text = file_path.read_text(encoding="utf-8")
             try:
                 parsed = parser_fn(raw_text, source_file=str(file_path))
+                parsed_items.append(parsed)
             except ValueError:
                 continue
-            tx = prepare_for_staging(parsed)
-            repo.upsert_tx(tx)
-            all_transactions.append(tx)
 
-    if not all_transactions:
+    if not parsed_items:
         raise ValueError("No email input files found for any Gmail source")
+
+    # Load rules from DB
+    rules = repo.list_rules(active_only=True)
+    all_transactions = prepare_batch_for_staging(parsed_items, rules=rules)
+
+    repo.upsert_batch(all_transactions)
 
     if repo.has_reconcile_off({tx.account_alias for tx in all_transactions}):
         raise ValueError("Cannot export OFX while reconcile status is off")
@@ -229,6 +234,8 @@ def _run_email_job(
     parser_fn: Callable[..., CanonicalTx],
     parser_source_name: str,
 ) -> RunSummary:
+    from ..etl.pipeline import prepare_batch_for_staging
+
     files = _collect_email_files(Path(input_path))
     if not files:
         raise ValueError(f"No {parser_source_name} email input files found")
@@ -236,13 +243,23 @@ def _run_email_job(
     repo = StagingRepo(db_path)
     _ensure_db(repo, Path(db_path), schema_path)
 
-    transactions: list[CanonicalTx] = []
+    parsed_items: list[CanonicalTx] = []
     for file_path in files:
         raw_text = file_path.read_text(encoding="utf-8")
-        parsed = parser_fn(raw_text, source_file=str(file_path))
-        tx = prepare_for_staging(parsed)
-        repo.upsert_tx(tx)
-        transactions.append(tx)
+        try:
+            parsed = parser_fn(raw_text, source_file=str(file_path))
+            parsed_items.append(parsed)
+        except ValueError:
+            continue
+
+    if not parsed_items:
+        raise ValueError(f"No valid {parser_source_name} email input files found")
+
+    # Load rules from DB
+    rules = repo.list_rules(active_only=True)
+    transactions = prepare_batch_for_staging(parsed_items, rules=rules)
+
+    repo.upsert_batch(transactions)
 
     if repo.has_reconcile_off({tx.account_alias for tx in transactions}):
         raise ValueError("Cannot export OFX while reconcile status is off")
@@ -272,6 +289,8 @@ def run_mp_online(
     owner: Literal["ricardo", "laura", "joint"] = "ricardo",
     page_size: int = 50,
 ) -> RunSummary:
+    from ..etl.pipeline import prepare_batch_for_staging
+
     repo = StagingRepo(db_path)
     _ensure_db(repo, Path(db_path), schema_path)
 
@@ -286,10 +305,11 @@ def run_mp_online(
             )
         )
 
-    transactions: list[CanonicalTx] = []
+    parsed_items: list[CanonicalTx] = []
     for payment in payments:
         try:
             parsed = parse_payment(payment, owner=owner)
+            parsed_items.append(parsed)
         except ValueError as exc:
             ref = str(
                 payment.get("id")
@@ -299,10 +319,13 @@ def run_mp_online(
             raise MercadoPagoParseError(
                 f"Approved Mercado Pago payment could not be parsed: {ref}"
             ) from exc
-        transactions.append(prepare_for_staging(parsed))
 
-    if not transactions:
+    if not parsed_items:
         raise ValueError("No approved Mercado Pago payments found in date range")
+
+    # Load rules from DB
+    rules = repo.list_rules(active_only=True)
+    transactions = prepare_batch_for_staging(parsed_items, rules=rules)
 
     if repo.has_reconcile_off({tx.account_alias for tx in transactions}):
         raise ValueError("Cannot export OFX while reconcile status is off")
@@ -332,6 +355,8 @@ def run_mp_to_ofx(
     report_output_path: str,
     owner: Literal["ricardo", "laura", "joint"] = "ricardo",
 ) -> RunSummary:
+    from ..etl.pipeline import prepare_batch_for_staging
+
     payloads = _load_mp_payloads(Path(input_path))
     if not payloads:
         raise ValueError("No Mercado Pago payments found in input")
@@ -339,12 +364,16 @@ def run_mp_to_ofx(
     repo = StagingRepo(db_path)
     _ensure_db(repo, Path(db_path), schema_path)
 
-    transactions: list[CanonicalTx] = []
+    parsed_items: list[CanonicalTx] = []
     for payload in payloads:
         parsed = parse_payment(payload, source_file=str(input_path), owner=owner)
-        tx = prepare_for_staging(parsed)
-        repo.upsert_tx(tx)
-        transactions.append(tx)
+        parsed_items.append(parsed)
+
+    # Load rules from DB
+    rules = repo.list_rules(active_only=True)
+    transactions = prepare_batch_for_staging(parsed_items, rules=rules)
+
+    repo.upsert_batch(transactions)
 
     if repo.has_reconcile_off({tx.account_alias for tx in transactions}):
         raise ValueError("Cannot export OFX while reconcile status is off")
