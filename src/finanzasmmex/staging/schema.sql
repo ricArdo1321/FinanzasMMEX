@@ -1,4 +1,4 @@
--- staging.db schema v1
+-- staging.db schema v2
 -- 2026-05-02
 
 PRAGMA journal_mode = WAL;
@@ -9,7 +9,7 @@ CREATE TABLE schema_version (
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-INSERT INTO schema_version (version) VALUES (1);
+INSERT INTO schema_version (version) VALUES (2);
 
 -- ===== canonical_tx =====
 CREATE TABLE canonical_tx (
@@ -41,9 +41,10 @@ CREATE TABLE canonical_tx (
     review_reason TEXT,
     mmex_account_id INTEGER,
     mmex_tx_id INTEGER,
-    mmex_status TEXT NOT NULL DEFAULT 'pending' 
+    mmex_status TEXT NOT NULL DEFAULT 'pending'
         CHECK (mmex_status IN ('pending','exported','inserted','rejected')),
     transfer_pair_uid TEXT,
+    to_account_alias TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (transfer_pair_uid) REFERENCES canonical_tx(tx_uid)

@@ -5,6 +5,26 @@ This file is the Codex-facing bridge for the specialist agents stored in
 user asks to "usar agentes", coordinate reviews, validate a phase gate, prepare
 a merge/PR/commit, or decide which specialist should inspect a change.
 
+## Workflow Orchestration
+
+- **Plan Mode Default:** Pass to plan mode for ALL non-trivial tasks (>3 stages or arch decisions).
+- **Plan Deviation:** If off-plan, STOP. Re-plan immediately. Don't force.
+- **Sub-agents Strategy:** Use sub-agents intensively. Keep main context clean. Delegate search, analysis, exploration. One task per sub-agent.
+- **Verification Loop:** Never mark done without proof. Execute tests, check logs. SENIOR engineer validation standard.
+- **Elegance:** Seek elegant solution for non-trivial changes. Avoid instability.
+- **Autonomous Fixing:** Fix bugs reported. Don't ask user to fix. Resolve CI failures without prompting.
+- **Task Management:**
+  - Plan in `tareas/a-hacer.md` with verifiable items.
+  - Track progress. Mark done as you go.
+  - Document results in review section of `tareas/a-hacer.md`.
+  - Self-Improvement: Update `tareas/lecciones.md` after every user correction. Write rules to avoid repeating errors.
+
+## Principles
+
+- **Simplicity:** Minimal code impact. 
+- **No Laziness:** Root causes only. No temp fixes. Senior standards.
+- **Impact:** Touch only necessary files. Prevent regressions.
+
 ## Startup
 
 Before agent-style review or coordinated work, read:
@@ -43,7 +63,7 @@ Do not claim that a specialist agent ran unless it actually ran.
 | `desktop/FinanzasMMEX.App/**`, WPF, subprocess invocation, UI JSON parsing | `wpf-ui-reviewer` |
 | `src/finanzasmmex/secrets/vault.py`, fixtures, logs, pre-commit/pre-PR, credential handling | `secrets-pii-auditor` |
 | Explicit source artifact to anonymize into `tests/fixtures/**` | `fixtures-anonymizer` |
-| Multi-area change, phase gate, pre-merge/pre-PR orchestration, or "which agents?" | `agent-orchestrator` |
+| Multi-area change, phase gate, pre-merge/pre-PR orchestration, or "which agents?" | `finanzas-orchestrator` |
 
 ## Phase Gates
 
@@ -96,6 +116,3 @@ gate_status:
   status: clear|blocked
 summary: <1-2 lines>
 ```
-
-For ordinary implementation work, keep the final response concise, but mention
-which specialist prompts were used or which required gate remains pending.

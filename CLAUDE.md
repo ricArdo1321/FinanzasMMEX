@@ -111,6 +111,26 @@ Defined in `contracts/envelope.schema.json`. Every CLI command returns JSON `{ok
 - `desktop/FinanzasMMEX.App/` — WPF UI: `MainViewModel`, `PendingsViewModel`, `QuickAddViewModel`, corresponding XAML views, `AsyncRelayCommand`.
 - `desktop/FinanzasMMEX.App.Tests/` — C# tests for envelope parsing, exit codes, error mapping.
 
+## Workflow Orchestration
+
+- **Plan Mode Default:** Use plan mode for ALL non-trivial tasks (>3 stages or arch decisions).
+- **Deviation:** If off-plan, STOP. Re-plan immediately. Don't force.
+- **Sub-agents:** Use intensively. Keep main context clean. Delegate search, analysis, exploration. One task per sub-agent.
+- **Verification:** Never mark done without proof. Execute tests, check logs. SENIOR engineer validation standard.
+- **Elegance:** Seek elegant solution for non-trivial changes. Avoid instability.
+- **Autonomous Bugs:** Fix bugs reported. Don't ask user to fix. Resolve CI failures without prompting.
+- **Task Management:**
+  - Plan in `tareas/a-hacer.md` with verifiable items.
+  - Track progress. Mark done as you go.
+  - Document results in review section of `tareas/a-hacer.md`.
+  - Self-Improvement: Update `tareas/lecciones.md` after every user correction. Write rules to avoid repeating errors.
+
+## Fundamental Principles
+
+- **Simplicity:** Minimal code impact. 
+- **No Laziness:** Root causes only. No temp fixes. Senior standards.
+- **Impact:** Touch only necessary files. Prevent regressions.
+
 ## Project conventions
 
 - **Owner field** (`owner`): `'ricardo' | 'laura' | 'joint'`. Don't assume single user.
@@ -123,11 +143,12 @@ Defined in `contracts/envelope.schema.json`. Every CLI command returns JSON `{ok
 
 ## Subagentes disponibles
 
-Roster en `.claude/agents/` (catálogo: `.claude/agents/README.md`). Triggers y especialidades:
+Roster en `.gemini/agents/` (Gemini CLI) y `.claude/agents/` (Claude Code).
 
 | Agente | Modelo | Cuándo dispara / Especialidad |
 |---|---|---|
-| `agent-orchestrator` | sonnet | Coordina especialistas con `Task`; usar en cambios multi-area, phase gates, pre-merge/pre-PR, o para decidir que agentes corresponden. |
+| `finanzas-orchestrator` | sonnet | **Master para Gemini CLI.** Coordina especialistas; usar en cambios multi-area, phase gates, pre-merge/pre-PR. |
+| `agent-orchestrator` | sonnet | **Master para Claude Code.** Equivalente a finanzas-orchestrator. |
 | `parser-reviewer` | sonnet | Edit en `src/finanzasmmex/adapters/*` |
 | `mmex-writer-guard` | opus | Edit en `src/finanzasmmex/writer/*` o lógica MMEX |
 | `secrets-pii-auditor` | opus | Pre-commit/PR, `vault.py`, fixtures, logs |
@@ -136,7 +157,7 @@ Roster en `.claude/agents/` (catálogo: `.claude/agents/README.md`). Triggers y 
 | `wpf-ui-reviewer` | sonnet | Edit en `desktop/**` |
 | `fixtures-anonymizer` | sonnet | Invocación explícita con archivo fuente |
 
-Phase gates: `agent-orchestrator` coordina, gates se cumplen por especialistas. Phase 1 merge → parser-reviewer + cli-contract-checker + secrets-pii-auditor sin `blocker`. Phase 2 → suma writer-guard + schema-validator + shadow-mode 1 semana. Phase 4 → suma wpf-ui-reviewer.
+Phase gates: `finanzas-orchestrator` (o `agent-orchestrator`) coordina revisión. Phase 1 merge → parser-reviewer + cli-contract-checker + secrets-pii-auditor sin `blocker`. Phase 2 → suma writer-guard + schema-validator + shadow-mode 1 semana. Phase 4 → suma wpf-ui-reviewer.
 
 Casos de validación en `tests/agent_cases/<agent>/{good,bad}/`. Spec completo: `docs/superpowers/specs/2026-05-02-claude-subagents-design.md`.
 
@@ -147,3 +168,161 @@ Casos de validación en `tests/agent_cases/<agent>/{good,bad}/`. Spec completo: 
 - `implementation_plan.md` — older Phase 0/1 detail; partial.
 - `investigación/iteracion #3/FinanzasMMEX_PlanArquitectura.pdf` — source-of-truth architecture PDF (Apéndice B schema, Apéndice C regex).
 - `contracts/CHANGELOG.md` — CLI/WPF contract version history.
+
+## Phase status
+
+Phase 0 partial: `pyproject.toml`, `models.py`, `staging/schema.sql`, `staging/repo.py`, `secrets/vault.py`, `cli.py skeleton`, WPF project shell. **Pending Phase 0**: `etl/`, `adapters/`, `orchestrator/`, `writer/ofx_export.py`, contracts/, tests/, fixtures, JSONL structlog setup, OAuth bootstrap, Ollama install, detect-secrets baseline.
+
+<!-- rtk-instructions v2 -->
+# RTK (Rust Token Killer) - Token-Optimized Commands
+
+## Golden Rule
+
+**Always prefix commands with `rtk`**. If RTK has a dedicated filter, it uses it. If not, it passes through unchanged. This means RTK is always safe to use.
+
+**Important**: Even in command chains with `&&`, use `rtk`:
+```bash
+# ❌ Wrong
+git add . && git commit -m "msg" && git push
+
+# ✅ Correct
+rtk git add . && rtk git commit -m "msg" && rtk git push
+```
+
+## Caveman Mode (Gemini CLI)
+
+Active for all responses. Terminate fluff, keep technical substance.
+
+### Rules
+- Terse talk. Smart caveman.
+- Article (a/an/the) die. Filler (just/really) die.
+- Short synonym use.
+- Intensity: **full**.
+
+To stop: "stop caveman".
+To check stats: `/caveman-stats`.
+To compress memory: `/caveman:compress FILEPATH`.
+
+
+## RTK Commands by Workflow
+
+### Build & Compile (80-90% savings)
+```bash
+rtk cargo build         # Cargo build output
+rtk cargo check         # Cargo check output
+rtk cargo clippy        # Clippy warnings grouped by file (80%)
+rtk tsc                 # TypeScript errors grouped by file/code (83%)
+rtk lint                # ESLint/Biome violations grouped (84%)
+rtk prettier --check    # Files needing format only (70%)
+rtk next build          # Next.js build with route metrics (87%)
+```
+
+### Test (60-99% savings)
+```bash
+rtk cargo test          # Cargo test failures only (90%)
+rtk go test             # Go test failures only (90%)
+rtk jest                # Jest failures only (99.5%)
+rtk vitest              # Vitest failures only (99.5%)
+rtk playwright test     # Playwright failures only (94%)
+rtk pytest              # Python test failures only (90%)
+rtk rake test           # Ruby test failures only (90%)
+rtk rspec               # RSpec test failures only (60%)
+rtk test <cmd>          # Generic test wrapper - failures only
+```
+
+### Git (59-80% savings)
+```bash
+rtk git status          # Compact status
+rtk git log             # Compact log (works with all git flags)
+rtk git diff            # Compact diff (80%)
+rtk git show            # Compact show (80%)
+rtk git add             # Ultra-compact confirmations (59%)
+rtk git commit          # Ultra-compact confirmations (59%)
+rtk git push            # Ultra-compact confirmations
+rtk git pull            # Ultra-compact confirmations
+rtk git branch          # Compact branch list
+rtk git fetch           # Compact fetch
+rtk git stash           # Compact stash
+rtk git worktree        # Compact worktree
+```
+
+Note: Git passthrough works for ALL subcommands, even those not explicitly listed.
+
+### GitHub (26-87% savings)
+```bash
+rtk gh pr view <num>    # Compact PR view (87%)
+rtk gh pr checks        # Compact PR checks (79%)
+rtk gh run list         # Compact workflow runs (82%)
+rtk gh issue list       # Compact issue list (80%)
+rtk gh api              # Compact API responses (26%)
+```
+
+### JavaScript/TypeScript Tooling (70-90% savings)
+```bash
+rtk pnpm list           # Compact dependency tree (70%)
+rtk pnpm outdated       # Compact outdated packages (80%)
+rtk pnpm install        # Compact install output (90%)
+rtk npm run <script>    # Compact npm script output
+rtk npx <cmd>           # Compact npx command output
+rtk prisma              # Prisma without ASCII art (88%)
+```
+
+### Files & Search (60-75% savings)
+```bash
+rtk ls <path>           # Tree format, compact (65%)
+rtk read <file>         # Code reading with filtering (60%)
+rtk grep <pattern>      # Search grouped by file (75%)
+rtk find <pattern>      # Find grouped by directory (70%)
+```
+
+### Analysis & Debug (70-90% savings)
+```bash
+rtk err <cmd>           # Filter errors only from any command
+rtk log <file>          # Deduplicated logs with counts
+rtk json <file>         # JSON structure without values
+rtk deps                # Dependency overview
+rtk env                 # Environment variables compact
+rtk summary <cmd>       # Smart summary of command output
+rtk diff                # Ultra-compact diffs
+```
+
+### Infrastructure (85% savings)
+```bash
+rtk docker ps           # Compact container list
+rtk docker images       # Compact image list
+rtk docker logs <c>     # Deduplicated logs
+rtk kubectl get         # Compact resource list
+rtk kubectl logs        # Deduplicated pod logs
+```
+
+### Network (65-70% savings)
+```bash
+rtk curl <url>          # Compact HTTP responses (70%)
+rtk wget <url>          # Compact download output (65%)
+```
+
+### Meta Commands
+```bash
+rtk gain                # View token savings statistics
+rtk gain --history      # View command history with savings
+rtk discover            # Analyze Claude Code sessions for missed RTK usage
+rtk proxy <cmd>         # Run command without filtering (for debugging)
+rtk init                # Add RTK instructions to CLAUDE.md
+rtk init --global       # Add RTK to ~/.claude/CLAUDE.md
+```
+
+## Token Savings Overview
+
+| Category | Commands | Typical Savings |
+|----------|----------|-----------------|
+| Tests | vitest, playwright, cargo test | 90-99% |
+| Build | next, tsc, lint, prettier | 70-87% |
+| Git | status, log, diff, add, commit | 59-80% |
+| GitHub | gh pr, gh run, gh issue | 26-87% |
+| Package Managers | pnpm, npm, npx | 70-90% |
+| Files | ls, read, grep, find | 60-75% |
+| Infrastructure | docker, kubectl | 85% |
+| Network | curl, wget | 65-70% |
+
+Overall average: **60-90% token reduction** on common development operations.
+<!-- /rtk-instructions -->

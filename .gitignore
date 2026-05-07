@@ -37,12 +37,19 @@ htmlcov/
 
 # Project Specific
 staging.db
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 *.db-shm
 *.db-wal
 *.mmb
 *.emb
+*.ofx
 logs/
-reports/*.html
+reports/
+backups/
+*.mmb.*
 secrets/*.json
 !secrets/placeholder.json
 .env

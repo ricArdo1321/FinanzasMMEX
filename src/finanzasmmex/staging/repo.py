@@ -35,10 +35,12 @@ class StagingRepo:
             account_alias, card_last4, merchant_raw, merchant_norm, tx_type,
             category_guess, subcategory_guess, tags_json, fitid_synthetic,
             parser_name, parser_version, needs_review, review_reason,
-            mmex_account_id, mmex_tx_id, mmex_status, transfer_pair_uid
+            mmex_account_id, mmex_tx_id, mmex_status, transfer_pair_uid,
+            to_account_alias
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?
         )
         ON CONFLICT(fitid_synthetic) DO UPDATE SET
             mmex_status = excluded.mmex_status,
@@ -75,6 +77,7 @@ class StagingRepo:
             tx.mmex_tx_id,
             tx.mmex_status,
             tx.transfer_pair_uid,
+            tx.to_account_alias,
         )
         with closing(self._get_connection()) as conn:
             conn.execute(sql, params)
@@ -334,4 +337,5 @@ class StagingRepo:
             mmex_tx_id=row["mmex_tx_id"],
             mmex_status=row["mmex_status"],
             transfer_pair_uid=row["transfer_pair_uid"],
+            to_account_alias=row["to_account_alias"],
         )

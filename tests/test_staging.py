@@ -1,5 +1,6 @@
 import sqlite3
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -28,7 +29,7 @@ def test_db_initialization(temp_db):
 
     conn = sqlite3.connect(temp_db)
     res = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert res[0] == 1
+    assert res[0] == 2
     conn.close()
 
 
@@ -156,3 +157,45 @@ def test_foreign_keys_enabled_for_repo_connections(repo):
 
     with pytest.raises(sqlite3.IntegrityError):
         repo.upsert_tx(tx)
+
+
+def test_upsert_and_retrieve_to_account_alias(tmp_path) -> None:
+    repo = StagingRepo(str(tmp_path / "staging.db"))
+    schema = Path(__file__).parent.parent / "src/finanzasmmex/staging/schema.sql"
+    repo.init_db(str(schema))
+
+    # Create the parent transaction to satisfy FK constraint
+    parent_tx = CanonicalTx(
+        tx_uid="pair-001",
+        owner="ricardo",
+        source_type="email",
+        content_sha256="parent123",
+        amount=Decimal("50000.00"),
+        direction="credit",
+        account_alias="MACH_R",
+        merchant_raw="Transferencia",
+        tx_type="internal_transfer",
+        parser_name="be_email_v1",
+        fitid_synthetic="fitid-transfer-pair",
+    )
+    repo.upsert_tx(parent_tx)
+
+    # Create the linked transaction with to_account_alias
+    tx = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="abc123",
+        amount=Decimal("50000.00"),
+        direction="debit",
+        account_alias="BE_R",
+        merchant_raw="Transferencia",
+        tx_type="internal_transfer",
+        parser_name="be_email_v1",
+        fitid_synthetic="fitid-transfer-1",
+        transfer_pair_uid="pair-001",
+        to_account_alias="MACH_R",
+    )
+    repo.upsert_tx(tx)
+    retrieved = repo.get_tx_by_fitid("fitid-transfer-1")
+    assert retrieved is not None
+    assert retrieved.to_account_alias == "MACH_R"
