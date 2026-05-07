@@ -124,6 +124,9 @@ def write_sql(
     inserted: dict[str, int] = {}
     inserted_accounts: dict[str, int] = {}
     duplicates = 0
+    rejected_unsupported_pairs = 0
+
+    credit_skip, pair_to_credit_uid = _build_transfer_index(eligible)
 
     conn = _connect(mmex_path)
     try:
@@ -136,38 +139,69 @@ def write_sql(
         sync_field_id = _ensure_sync_hash_field(conn)
 
         for tx in eligible:
+            if tx.tx_uid in credit_skip:
+                continue
+
+            if tx.tx_type == "internal_transfer":
+                pair_uid = tx.transfer_pair_uid
+                if pair_uid is None or pair_uid not in pair_to_credit_uid:
+                    rejected_unsupported_pairs += 1
+                    continue
+                if tx.direction != "debit":
+                    # Safety: _build_transfer_index should have put this in credit_skip
+                    continue
+
             if not tx.fitid_synthetic:
                 raise MmexMappingError("fitid_synthetic is required for SQL writer")
             if _sync_hash_exists(conn, sync_field_id, tx.fitid_synthetic):
                 duplicates += 1
                 continue
 
-            account_id = _resolve_account_id(
-                conn, tx.account_alias, card_last4=tx.card_last4
-            )
-            category_id, subcategory_id = _resolve_category(
-                conn,
-                tx.category_guess,
-                tx.subcategory_guess,
-            )
-            payee_id = _resolve_payee_id(
-                conn,
-                _payee_name(tx),
-                category_id,
-                subcategory_id,
-            )
-            mmex_tx_id = _insert_checking_tx(
-                conn,
-                tx,
-                account_id=account_id,
-                payee_id=payee_id,
-                category_id=category_id,
-                subcategory_id=subcategory_id,
-            )
+            if tx.tx_type == "internal_transfer":
+                mmex_tx_id = _insert_transfer_tx(conn, tx)
+                # Map both legs to the same MMEX row in summary
+                pair_uid = tx.transfer_pair_uid
+                if pair_uid is None:
+                    raise MmexMappingError(
+                        "transfer_pair_uid is required for internal transfers"
+                    )
+                credit_uid = pair_to_credit_uid[pair_uid]
+                inserted[tx.tx_uid] = mmex_tx_id
+                inserted[credit_uid] = mmex_tx_id
+                # Track debit account in summary (standard for transfers)
+                account_id = _resolve_account_id(
+                    conn, tx.account_alias, card_last4=tx.card_last4
+                )
+                inserted_accounts[tx.tx_uid] = account_id
+                inserted_accounts[credit_uid] = account_id
+            else:
+                account_id = _resolve_account_id(
+                    conn, tx.account_alias, card_last4=tx.card_last4
+                )
+                category_id, subcategory_id = _resolve_category(
+                    conn,
+                    tx.category_guess,
+                    tx.subcategory_guess,
+                )
+                payee_id = _resolve_payee_id(
+                    conn,
+                    _payee_name(tx),
+                    category_id,
+                    subcategory_id,
+                )
+                mmex_tx_id = _insert_checking_tx(
+                    conn,
+                    tx,
+                    account_id=account_id,
+                    payee_id=payee_id,
+                    category_id=category_id,
+                    subcategory_id=subcategory_id,
+                )
+                inserted[tx.tx_uid] = mmex_tx_id
+                inserted_accounts[tx.tx_uid] = account_id
+
             _insert_sync_hash(conn, sync_field_id, mmex_tx_id, tx.fitid_synthetic)
             _apply_tags(conn, tx.tags, mmex_tx_id)
-            inserted[tx.tx_uid] = mmex_tx_id
-            inserted_accounts[tx.tx_uid] = account_id
 
         conn.commit()
     except sqlite3.OperationalError as exc:
@@ -189,12 +223,15 @@ def write_sql(
     except OSError:
         post_backup_path = None
 
+    # Calculate actual items_inserted as the number of unique MMEX rows created
+    unique_mmex_ids = set(inserted.values())
+
     return SqlWriteSummary(
         items_considered=len(txs),
-        items_inserted=len(inserted),
+        items_inserted=len(unique_mmex_ids),
         items_skipped_duplicate=duplicates,
         items_rejected_review=rejected_review,
-        items_rejected_unsupported=rejected_unsupported,
+        items_rejected_unsupported=rejected_unsupported + rejected_unsupported_pairs,
         mmex_path=str(mmex_path),
         backup_pre_path=str(pre_backup_path) if pre_backup_path else None,
         backup_post_path=post_backup_path,
@@ -241,7 +278,31 @@ def _safe_mmex_db_path(
 
 
 def _unsupported_for_sql(tx: CanonicalTx) -> bool:
-    return tx.tx_type in {"transfer_in", "transfer_out", "internal_transfer"}
+    return tx.tx_type in {"transfer_in", "transfer_out"}
+
+
+def _build_transfer_index(
+    eligible: list[CanonicalTx],
+) -> tuple[set[str], dict[str, str]]:
+    """Pre-pass over eligible batch to identify complete transfer pairs.
+
+    Returns:
+    - credit_skip: tx_uids of credit legs whose debit counterpart is in this batch
+    - pair_to_credit_uid: transfer_pair_uid → credit leg tx_uid (complete pairs only)
+    """
+    debit_by_pair: dict[str, CanonicalTx] = {}
+    credit_by_pair: dict[str, CanonicalTx] = {}
+    for tx in eligible:
+        if tx.tx_type != "internal_transfer" or not tx.transfer_pair_uid:
+            continue
+        if tx.direction == "debit" and tx.to_account_alias:
+            debit_by_pair[tx.transfer_pair_uid] = tx
+        elif tx.direction == "credit":
+            credit_by_pair[tx.transfer_pair_uid] = tx
+    complete = set(debit_by_pair) & set(credit_by_pair)
+    credit_skip = {credit_by_pair[uid].tx_uid for uid in complete}
+    pair_to_credit_uid = {uid: credit_by_pair[uid].tx_uid for uid in complete}
+    return credit_skip, pair_to_credit_uid
 
 
 def _safe_backup(mmex_path: Path, backup_dir: str | Path, kind: str) -> Path:
@@ -773,6 +834,50 @@ def _insert_checking_tx(
     if missing:
         raise MmexSchemaError(
             f"CHECKINGACCOUNT_V1 missing required columns: {sorted(missing)}"
+        )
+    return _insert_row_returning_id(conn, "CHECKINGACCOUNT_V1", filtered, trans_id_col)
+
+
+def _insert_transfer_tx(
+    conn: sqlite3.Connection,
+    tx: CanonicalTx,
+) -> int:
+    """Insert CHECKINGACCOUNT_V1 Transfer row. Caller handles sync_hash."""
+    columns = _columns(conn, "CHECKINGACCOUNT_V1")
+    trans_id_col = _first_present(columns, ("TRANSID",))
+    tx_date = tx.posted_date or tx.event_date or tx.booking_date
+    if tx_date is None:
+        raise MmexMappingError("Transaction date is required for SQL writer")
+    assert tx.to_account_alias, (
+        "to_account_alias must be set before calling _insert_transfer_tx"
+    )
+    account_id = _resolve_account_id(conn, tx.account_alias, card_last4=tx.card_last4)
+    to_account_id = _resolve_account_id(conn, tx.to_account_alias)
+    amount_str = _amount_value(tx.amount)
+    values: dict[str, object] = {
+        "ACCOUNTID": account_id,
+        "TOACCOUNTID": to_account_id,
+        "PAYEEID": 0,
+        "TRANSCODE": "Transfer",
+        "TRANSAMOUNT": amount_str,
+        "TOTRANSAMOUNT": amount_str,
+        "STATUS": "N",
+        "TRANSACTIONNUMBER": tx.source_ref or "",
+        "NOTES": _notes(tx),
+        "CATEGID": -1,
+        "SUBCATEGID": -1,
+        "TRANSDATE": tx_date.isoformat(),
+        "FOLLOWUPID": -1,
+        "COLOR": "",
+        "DELETEDTIME": "",
+    }
+    filtered = {key: value for key, value in values.items() if key in columns}
+    required = {"ACCOUNTID", "TOACCOUNTID", "TRANSCODE", "TRANSAMOUNT", "TRANSDATE"}
+    missing = required - set(filtered)
+    if missing:
+        raise MmexSchemaError(
+            "CHECKINGACCOUNT_V1 missing required columns for Transfer: "
+            f"{sorted(missing)}"
         )
     return _insert_row_returning_id(conn, "CHECKINGACCOUNT_V1", filtered, trans_id_col)
 

@@ -124,6 +124,27 @@ def test_link_is_idempotent() -> None:
     assert once_pairs == twice_pairs
 
 
+def test_link_populates_to_account_alias_symmetrically() -> None:
+    a = _tx(direction="debit", account="BE_R", tx_type="transfer_out", tx_uid="a")
+    b = _tx(direction="credit", account="MACH_R", tx_type="transfer_in", tx_uid="b")
+    out = link_internal_transfers([a, b])
+    by_uid = {tx.tx_uid: tx for tx in out}
+    assert by_uid["a"].to_account_alias == "MACH_R"
+    assert by_uid["b"].to_account_alias == "BE_R"
+
+
+def test_link_unpaired_tx_leaves_to_account_alias_none() -> None:
+    a = _tx(
+        direction="debit",
+        account="BE_R",
+        merchant="Supermercado",
+        tx_type="purchase",
+        tx_uid="a",
+    )
+    out = link_internal_transfers([a])
+    assert out[0].to_account_alias is None
+
+
 def test_canonical_tx_default_to_account_alias_is_none() -> None:
     tx = _tx(direction="debit", account="BE_R")
     assert tx.to_account_alias is None

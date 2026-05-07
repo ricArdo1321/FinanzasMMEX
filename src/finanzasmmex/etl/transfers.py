@@ -15,7 +15,8 @@ def link_internal_transfers(txs: Iterable[CanonicalTx]) -> list[CanonicalTx]:
     items = list(txs)
     by_uid: dict[str, CanonicalTx] = {tx.tx_uid: tx for tx in items}
 
-    paired: dict[str, str] = {}
+    paired: dict[str, str] = {}          # tx_uid → pair_uid
+    to_alias: dict[str, str] = {}        # tx_uid → counterpart account_alias
     consumed: set[str] = set()
 
     for i, tx_a in enumerate(items):
@@ -23,7 +24,7 @@ def link_internal_transfers(txs: Iterable[CanonicalTx]) -> list[CanonicalTx]:
             continue
         if not _is_transfer_candidate(tx_a):
             continue
-        for tx_b in items[i + 1 :]:
+        for tx_b in items[i + 1:]:
             if tx_b.tx_uid in consumed:
                 continue
             if not _is_pair(tx_a, tx_b):
@@ -31,12 +32,16 @@ def link_internal_transfers(txs: Iterable[CanonicalTx]) -> list[CanonicalTx]:
             pair_uid = tx_a.transfer_pair_uid or tx_b.transfer_pair_uid or str(uuid4())
             paired[tx_a.tx_uid] = pair_uid
             paired[tx_b.tx_uid] = pair_uid
+            to_alias[tx_a.tx_uid] = tx_b.account_alias
+            to_alias[tx_b.tx_uid] = tx_a.account_alias
             consumed.add(tx_a.tx_uid)
             consumed.add(tx_b.tx_uid)
             break
 
     return [
-        _apply_pair(by_uid[uid], paired[uid]) if uid in paired else tx
+        _apply_pair(by_uid[uid], paired[uid], to_alias[uid])
+        if uid in paired
+        else tx
         for uid, tx in by_uid.items()
     ]
 
@@ -78,5 +83,10 @@ def _ref_date(tx: CanonicalTx) -> date | None:
     return tx.event_date or tx.posted_date or tx.booking_date
 
 
-def _apply_pair(tx: CanonicalTx, pair_uid: str) -> CanonicalTx:
-    return replace(tx, transfer_pair_uid=pair_uid, tx_type="internal_transfer")
+def _apply_pair(tx: CanonicalTx, pair_uid: str, to_account_alias: str) -> CanonicalTx:
+    return replace(
+        tx,
+        transfer_pair_uid=pair_uid,
+        tx_type="internal_transfer",
+        to_account_alias=to_account_alias,
+    )

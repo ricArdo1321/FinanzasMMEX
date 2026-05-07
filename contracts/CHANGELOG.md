@@ -85,3 +85,23 @@ Ninguno. `init`, `run`, `login` mantienen su contrato exacto.
 
 Ninguno. `--gmail-source` es opcional con default `be`, completamente
 backward-compatible. El contrato del envelope no cambia.
+
+## 2026-05-07 - Gmail and Mercado Pago online hardening
+
+### Changed
+
+- `run --source gmail` y `run --source all` ya no anuncian
+  `finanzasmmex login --source gmail`, porque Gmail OAuth login aun no esta
+  implementado. Mantienen `CREDENTIALS_REQUIRED` exit `3` y
+  `offline_flag: "--input"`.
+- MP 401/403 online errors se mapean a `CREDENTIALS_REQUIRED` exit `3`.
+- MP temporary/network/server errors se mapean a `TEMPORARY_FAILURE` exit `5`.
+- MP online ingestion aborta antes de staging/OFX si un pago aprobado no puede
+  parsearse.
+- MP negative `transaction_amount` values se rechazan en vez de convertirse a
+  creditos positivos.
+
+### Breaking changes
+
+None. The envelope schema is unchanged. MP online behavior is stricter for
+unsafe source data.

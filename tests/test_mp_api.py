@@ -88,10 +88,11 @@ def test_parse_payment_handles_iso_z_suffix() -> None:
     assert tx.event_date == date(2026, 5, 2)
 
 
-def test_parse_payment_rejects_zero_or_negative_amount() -> None:
+@pytest.mark.parametrize("amount", [0, -12500, "-12500.00"])
+def test_parse_payment_rejects_zero_or_negative_amount(amount) -> None:
     payload = _payment_payload()
-    payload["transaction_amount"] = 0
-    with pytest.raises(ValueError):
+    payload["transaction_amount"] = amount
+    with pytest.raises(ValueError, match="must be > 0"):
         parse_payment(payload)
 
 

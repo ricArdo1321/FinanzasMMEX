@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NoReturn
 
+from .adapters.mp_api import MercadoPagoCredentialsError, MercadoPagoTemporaryError
 from .etl.fitid import ensure_fitid
 from .etl.normalize import parse_clp_amount
 from .models import CanonicalTx
@@ -146,7 +147,7 @@ def _run_gmail(args: argparse.Namespace) -> NoReturn:
                     "details": {
                         "source": args.source,
                         "offline_flag": "--input",
-                        "login_command": "finanzasmmex login --source gmail",
+                        "available_mode": "offline_input_only",
                     },
                 }
             ],
@@ -198,7 +199,7 @@ def _run_gmail_all(args: argparse.Namespace) -> NoReturn:
                     "details": {
                         "source": args.source,
                         "offline_flag": "--input",
-                        "login_command": "finanzasmmex login --source gmail",
+                        "available_mode": "offline_input_only",
                     },
                 }
             ],
@@ -275,15 +276,47 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
     else:
         _parse_iso_date(end_date, "--end-date")  # validate format
 
-    result = run_mp_online(
-        access_token=token,
-        begin_date=begin_date,
-        end_date=end_date,
-        db_path=args.db,
-        schema_path=args.schema,
-        ofx_output_path=args.ofx_output,
-        report_output_path=args.report_output,
-    )
+    try:
+        result = run_mp_online(
+            access_token=token,
+            begin_date=begin_date,
+            end_date=end_date,
+            db_path=args.db,
+            schema_path=args.schema,
+            ofx_output_path=args.ofx_output,
+            report_output_path=args.report_output,
+        )
+    except MercadoPagoCredentialsError as exc:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "CREDENTIALS_REQUIRED",
+                    "message": "Mercado Pago access token is invalid or expired",
+                    "details": {
+                        "source": args.source,
+                        "login_command": "finanzasmmex login --source mp",
+                        "exception_type": type(exc).__name__,
+                    },
+                }
+            ],
+            exit_code=3,
+        )
+    except MercadoPagoTemporaryError as exc:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "TEMPORARY_FAILURE",
+                    "message": "Mercado Pago API request failed temporarily",
+                    "details": {
+                        "source": args.source,
+                        "exception_type": type(exc).__name__,
+                    },
+                }
+            ],
+            exit_code=5,
+        )
     _emit(
         True,
         data={

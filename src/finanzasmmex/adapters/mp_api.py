@@ -228,7 +228,7 @@ def _coerce_amount(value: Any) -> Decimal:
         raise MercadoPagoParseError(
             f"Invalid MP transaction_amount: {value!r}"
         ) from exc
-    amount = amount.copy_abs().quantize(Decimal("0.00"))
+    amount = amount.quantize(Decimal("0.00"))
     if amount <= 0:
         raise MercadoPagoParseError("MP transaction_amount must be > 0")
     return amount

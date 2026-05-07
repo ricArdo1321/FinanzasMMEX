@@ -5,7 +5,7 @@ actividades realizadas fuera del entorno Windows productivo.
 
 ---
 
-## 2026-05-05 — Sesión inicial Linux + wire CMR/Mach + login gmail
+## 2026-05-05 — Sesión inicial Linux + wire CMR/Mach
 
 **Entorno**: Linux 6.17.0-23-generic, Python 3.11+, sin `gh` CLI, sin Windows Credential Manager.
 
@@ -17,7 +17,9 @@ actividades realizadas fuera del entorno Windows productivo.
   Para tests esto no es problema porque usan paths temporales.
 - `detect-secrets` no está instalado; `pytest` tampoco (pendiente `pip install -e .[dev]`).
 
-**Issue implementado**: Wire CMR + Mach email parsers en CLI/orchestrator + fix login --source gmail.
+**Issue implementado**: Wire CMR + Mach email parsers en CLI/orchestrator.
+Gmail OAuth login sigue fuera de alcance; el CLI no debe recomendar
+`login --source gmail` hasta que exista.
 
 ## 2026-05-05 — MP online ingestion
 
@@ -46,3 +48,19 @@ orchestrator. Solo `--source gmail` funcionaba y solo manejaba BancoEstado.
 
 **Resultado**: 131 tests passing, ruff/mypy clean. Agentes de revisión
 (cli-contract-checker, secrets-pii-auditor) lanzados en background.
+
+## 2026-05-07 - Hardening post-review
+
+**Correcciones implementadas**:
+- Gmail credential errors: no anuncian `login --source gmail` mientras no exista.
+- MP online: 401/403 se mapean a `CREDENTIALS_REQUIRED` exit 3.
+- MP online: los fallos temporales se mapean a `TEMPORARY_FAILURE` exit 5.
+- MP online: si un pago aprobado no parsea, aborta antes de upsert/OFX.
+- MP parser: rechaza montos negativos en vez de convertirlos a creditos positivos.
+- Writer transfer: mantiene una fila MMEX `Transfer` por par y cierra lint/tests.
+
+**Verificacion esperada**:
+- `ruff check src/ tests/`
+- `mypy src/`
+- `pytest --basetemp C:\tmp\pytest-finanzasmmex-full`
+- `detect-secrets scan --baseline .secrets.baseline`

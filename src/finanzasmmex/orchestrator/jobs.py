@@ -5,7 +5,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from ..adapters.mp_api import parse_payment
+from ..adapters.mp_api import MercadoPagoClient, MercadoPagoParseError, parse_payment
 from ..artifacts import safe_output_path
 from ..etl.pipeline import prepare_for_staging
 from ..models import CanonicalTx
@@ -272,32 +272,43 @@ def run_mp_online(
     owner: Literal["ricardo", "laura", "joint"] = "ricardo",
     page_size: int = 50,
 ) -> RunSummary:
-    from ..adapters.mp_api import MercadoPagoClient
-
     repo = StagingRepo(db_path)
     _ensure_db(repo, Path(db_path), schema_path)
 
-    client = MercadoPagoClient(access_token=access_token)
+    payments: list[Mapping[str, Any]]
+    with MercadoPagoClient(access_token=access_token) as client:
+        payments = list(
+            client.search_payments(
+                begin_date=begin_date,
+                end_date=end_date,
+                status="approved",
+                page_size=page_size,
+            )
+        )
+
     transactions: list[CanonicalTx] = []
-    for payment in client.search_payments(
-        begin_date=begin_date,
-        end_date=end_date,
-        status="approved",
-        page_size=page_size,
-    ):
+    for payment in payments:
         try:
             parsed = parse_payment(payment, owner=owner)
-        except ValueError:
-            continue
-        tx = prepare_for_staging(parsed)
-        repo.upsert_tx(tx)
-        transactions.append(tx)
+        except ValueError as exc:
+            ref = str(
+                payment.get("id")
+                or payment.get("external_reference")
+                or "<unknown>"
+            )
+            raise MercadoPagoParseError(
+                f"Approved Mercado Pago payment could not be parsed: {ref}"
+            ) from exc
+        transactions.append(prepare_for_staging(parsed))
 
     if not transactions:
         raise ValueError("No approved Mercado Pago payments found in date range")
 
     if repo.has_reconcile_off({tx.account_alias for tx in transactions}):
         raise ValueError("Cannot export OFX while reconcile status is off")
+
+    for tx in transactions:
+        repo.upsert_tx(tx)
 
     ofx_path = write_ofx(transactions, ofx_output_path)
     report_path = write_review_report(transactions, report_output_path)

@@ -41,6 +41,48 @@ def make_tx(
     )
 
 
+def make_transfer_pair(
+    *, pair_uid: str = "pair-001"
+) -> tuple[CanonicalTx, CanonicalTx]:
+    debit = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        source_ref="TRF-1",
+        content_sha256="hash-debit",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("50000.00"),
+        direction="debit",
+        account_alias="BE_Ricardo_1234",
+        to_account_alias="BE_Laura_1234",
+        merchant_raw="Transferencia",
+        merchant_norm="TRANSFERENCIA",
+        tx_type="internal_transfer",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-debit-001",
+        transfer_pair_uid=pair_uid,
+    )
+    credit = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        source_ref="TRF-2",
+        content_sha256="hash-credit",
+        posted_date=date(2026, 5, 2),
+        amount=Decimal("50000.00"),
+        direction="credit",
+        account_alias="BE_Laura_1234",
+        to_account_alias="BE_Ricardo_1234",
+        merchant_raw="Transferencia",
+        merchant_norm="TRANSFERENCIA",
+        tx_type="internal_transfer",
+        parser_name="be_email_v1",
+        parser_version="1.0",
+        fitid_synthetic="fitid-credit-001",
+        transfer_pair_uid=pair_uid,
+    )
+    return debit, credit
+
+
 def create_mmex_db(path) -> None:
     with sqlite3.connect(path) as conn:
         conn.executescript("""
@@ -107,6 +149,8 @@ def create_mmex_db(path) -> None:
             );
             INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME)
             VALUES (10, 'BE_Ricardo_1234');
+            INSERT INTO ACCOUNTLIST_V1 (ACCOUNTID, ACCOUNTNAME)
+            VALUES (20, 'BE_Laura_1234');
             """)
 
 
@@ -582,3 +626,128 @@ def test_partial_unique_index_recreated_after_field_recreation(tmp_path) -> None
     assert all(name == f"uq_finanzasmmex_sync_hash_{new_id}" for name in indexes), (
         f"Stale per-field indexes survived: {indexes}"
     )
+
+
+def test_transfer_inserts_one_mmex_row(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+    debit, credit = make_transfer_pair()
+
+    summary = write_sql(
+        [debit, credit],
+        mmex_db_path=mmex,
+        backup_dir=backups,
+        allow_shadow_write=True,
+    )
+
+    assert summary.items_inserted == 1
+    assert summary.items_rejected_unsupported == 0
+
+    with sqlite3.connect(mmex) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM CHECKINGACCOUNT_V1").fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["TRANSCODE"] == "Transfer"
+    assert row["ACCOUNTID"] == 10    # BE_Ricardo_1234
+    assert row["TOACCOUNTID"] == 20  # BE_Laura_1234
+    assert row["TRANSAMOUNT"] == "50000.00"
+    assert row["TOTRANSAMOUNT"] == "50000.00"
+
+
+def test_transfer_idempotent(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+    debit, credit = make_transfer_pair()
+
+    first = write_sql(
+        [debit, credit],
+        mmex_db_path=mmex,
+        backup_dir=backups,
+        allow_shadow_write=True,
+    )
+    second = write_sql(
+        [debit, credit],
+        mmex_db_path=mmex,
+        backup_dir=backups,
+        allow_shadow_write=True,
+    )
+
+    assert first.items_inserted == 1
+    assert second.items_inserted == 0
+    assert second.items_skipped_duplicate == 1
+
+    with sqlite3.connect(mmex) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM CHECKINGACCOUNT_V1"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_transfer_incomplete_pair_rejected(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+    debit, _ = make_transfer_pair()  # credit leg absent from batch
+
+    summary = write_sql(
+        [debit],
+        mmex_db_path=mmex,
+        backup_dir=backups,
+        allow_shadow_write=True,
+    )
+
+    assert summary.items_inserted == 0
+    assert summary.items_rejected_unsupported == 1
+
+    with sqlite3.connect(mmex) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM CHECKINGACCOUNT_V1"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_transfer_rollback_on_mapping_error(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+    debit, credit = make_transfer_pair()
+    # to_account_alias points to an account that doesn't exist in this MMEX
+    from dataclasses import replace as dc_replace
+    debit_bad = dc_replace(debit, to_account_alias="NONEXISTENT_ACCOUNT")
+    credit_bad = dc_replace(credit, to_account_alias="BE_Ricardo_1234")
+
+    with pytest.raises(MmexMappingError):
+        write_sql(
+            [debit_bad, credit_bad],
+            mmex_db_path=mmex,
+            backup_dir=backups,
+            allow_shadow_write=True,
+        )
+
+    with sqlite3.connect(mmex) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM CHECKINGACCOUNT_V1"
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_transfer_both_staging_tx_uids_in_summary(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+    debit, credit = make_transfer_pair()
+
+    summary = write_sql(
+        [debit, credit],
+        mmex_db_path=mmex,
+        backup_dir=backups,
+        allow_shadow_write=True,
+    )
+
+    # Both staging tx_uids must appear in mmex_tx_ids, mapped to the same MMEX row
+    assert debit.tx_uid in summary.mmex_tx_ids
+    assert credit.tx_uid in summary.mmex_tx_ids
+    assert summary.mmex_tx_ids[debit.tx_uid] == summary.mmex_tx_ids[credit.tx_uid]

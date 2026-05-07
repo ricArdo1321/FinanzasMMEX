@@ -1,9 +1,18 @@
+import argparse
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
+
+from finanzasmmex import cli
+from finanzasmmex.adapters.mp_api import (
+    MercadoPagoCredentialsError,
+    MercadoPagoTemporaryError,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -166,6 +175,30 @@ def test_run_without_input_returns_credentials_error() -> None:
     assert payload["errors"][0]["details"]["offline_flag"] == "--input"
 
 
+def test_run_gmail_without_input_does_not_advertise_unsupported_login() -> None:
+    result = run_cli("run", "--source", "gmail", "--writer", "ofx")
+
+    payload = parse_stdout(result)
+    details = payload["errors"][0]["details"]
+
+    assert result.returncode == 3
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+    assert details["offline_flag"] == "--input"
+    assert "login_command" not in details
+
+
+def test_run_all_without_input_does_not_advertise_unsupported_gmail_login() -> None:
+    result = run_cli("run", "--source", "all", "--writer", "ofx")
+
+    payload = parse_stdout(result)
+    details = payload["errors"][0]["details"]
+
+    assert result.returncode == 3
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+    assert details["offline_flag"] == "--input"
+    assert "login_command" not in details
+
+
 def test_run_mp_offline_input_succeeds(tmp_path) -> None:
     fixture = ROOT / "tests" / "fixtures" / "mp_api" / "payment_anonymized.json"
     result = run_cli(
@@ -209,6 +242,64 @@ def test_run_mp_without_input_or_token_returns_credentials_error() -> None:
     assert payload["ok"] is False
     assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
     assert payload["errors"][0]["details"]["login_command"].endswith("--source mp")
+
+
+def _mp_online_args(tmp_path: Path) -> argparse.Namespace:
+    return argparse.Namespace(
+        input=None,
+        source="mp",
+        writer="ofx",
+        db=str(tmp_path / "staging.db"),
+        schema=str(ROOT / "src" / "finanzasmmex" / "staging" / "schema.sql"),
+        ofx_output=str(tmp_path / "mp.ofx"),
+        report_output=str(tmp_path / "review.html"),
+        begin_date="2026-05-01",
+        end_date="2026-05-07",
+    )
+
+
+def test_run_mp_online_credentials_error_maps_exit_3(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    def raise_credentials(**kwargs) -> None:
+        raise MercadoPagoCredentialsError("mp_credentials_invalid:http_401")
+
+    monkeypatch.setenv("MP_ACCESS_TOKEN", "TEST-TOKEN")
+    monkeypatch.setenv("FINANZASMMEX_DISABLE_VAULT", "1")
+    monkeypatch.setattr(cli, "run_mp_online", raise_credentials)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._run_mp(_mp_online_args(tmp_path))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exc.value.code == 3
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+    assert "TEST-TOKEN" not in json.dumps(payload)
+
+
+def test_run_mp_online_temporary_error_maps_exit_5(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    def raise_temporary(**kwargs) -> None:
+        raise MercadoPagoTemporaryError("mp_server_error:http_503")
+
+    monkeypatch.setenv("MP_ACCESS_TOKEN", "TEST-TOKEN")
+    monkeypatch.setenv("FINANZASMMEX_DISABLE_VAULT", "1")
+    monkeypatch.setattr(cli, "run_mp_online", raise_temporary)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._run_mp(_mp_online_args(tmp_path))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exc.value.code == 5
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "TEMPORARY_FAILURE"
+    assert "TEST-TOKEN" not in json.dumps(payload)
 
 
 def test_login_mp_requires_token_env_var() -> None:
