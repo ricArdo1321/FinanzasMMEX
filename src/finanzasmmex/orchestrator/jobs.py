@@ -1,10 +1,10 @@
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from ..adapters.be_email import parse_purchase_email
 from ..adapters.mp_api import parse_payment
 from ..artifacts import safe_output_path
 from ..etl.pipeline import prepare_for_staging
@@ -106,9 +106,132 @@ def run_gmail_bancoestado_to_ofx(
     ofx_output_path: str,
     report_output_path: str,
 ) -> RunSummary:
+    from ..adapters.be_email import parse_purchase_email
+
+    return _run_email_job(
+        input_path=input_path,
+        db_path=db_path,
+        schema_path=schema_path,
+        ofx_output_path=ofx_output_path,
+        report_output_path=report_output_path,
+        parser_fn=parse_purchase_email,
+        parser_source_name="BancoEstado",
+    )
+
+
+def run_gmail_cmr_to_ofx(
+    *,
+    input_path: str,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+) -> RunSummary:
+    from ..adapters.cmr_email import parse_purchase_email as parse_cmr
+
+    return _run_email_job(
+        input_path=input_path,
+        db_path=db_path,
+        schema_path=schema_path,
+        ofx_output_path=ofx_output_path,
+        report_output_path=report_output_path,
+        parser_fn=parse_cmr,
+        parser_source_name="CMR",
+    )
+
+
+def run_gmail_mach_to_ofx(
+    *,
+    input_path: str,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+) -> RunSummary:
+    from ..adapters.mach_email import parse_purchase_email as parse_mach
+
+    return _run_email_job(
+        input_path=input_path,
+        db_path=db_path,
+        schema_path=schema_path,
+        ofx_output_path=ofx_output_path,
+        report_output_path=report_output_path,
+        parser_fn=parse_mach,
+        parser_source_name="Mach",
+    )
+
+
+def run_gmail_all_to_ofx(
+    *,
+    input_path: str,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+) -> RunSummary:
+    from ..adapters.be_email import parse_purchase_email as parse_be
+    from ..adapters.cmr_email import parse_purchase_email as parse_cmr
+    from ..adapters.mach_email import parse_purchase_email as parse_mach
+
+    repo = StagingRepo(db_path)
+    _ensure_db(repo, Path(db_path), schema_path)
+
+    base = Path(input_path)
+    sources: list[tuple[Callable[..., CanonicalTx], str, Path]] = [
+        (parse_be, "BancoEstado", base),
+        (parse_cmr, "CMR", base / "cmr"),
+        (parse_mach, "Mach", base / "mach"),
+    ]
+
+    all_transactions: list[CanonicalTx] = []
+    for parser_fn, _name, source_path in sources:
+        if not source_path.is_dir():
+            continue
+        files = _collect_email_files(source_path)
+        if not files:
+            continue
+        for file_path in files:
+            raw_text = file_path.read_text(encoding="utf-8")
+            try:
+                parsed = parser_fn(raw_text, source_file=str(file_path))
+            except ValueError:
+                continue
+            tx = prepare_for_staging(parsed)
+            repo.upsert_tx(tx)
+            all_transactions.append(tx)
+
+    if not all_transactions:
+        raise ValueError("No email input files found for any Gmail source")
+
+    if repo.has_reconcile_off({tx.account_alias for tx in all_transactions}):
+        raise ValueError("Cannot export OFX while reconcile status is off")
+
+    ofx_path = write_ofx(all_transactions, ofx_output_path)
+    report_path = write_review_report(all_transactions, report_output_path)
+
+    return RunSummary(
+        items_processed=len(all_transactions),
+        items_inserted=len(all_transactions),
+        items_review=sum(1 for tx in all_transactions if tx.needs_review),
+        db_path=db_path,
+        ofx_path=str(ofx_path),
+        report_path=str(report_path),
+    )
+
+
+def _run_email_job(
+    *,
+    input_path: str,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+    parser_fn: Callable[..., CanonicalTx],
+    parser_source_name: str,
+) -> RunSummary:
     files = _collect_email_files(Path(input_path))
     if not files:
-        raise ValueError("No BancoEstado email input files found")
+        raise ValueError(f"No {parser_source_name} email input files found")
 
     repo = StagingRepo(db_path)
     _ensure_db(repo, Path(db_path), schema_path)
@@ -116,10 +239,62 @@ def run_gmail_bancoestado_to_ofx(
     transactions: list[CanonicalTx] = []
     for file_path in files:
         raw_text = file_path.read_text(encoding="utf-8")
-        parsed = parse_purchase_email(raw_text, source_file=str(file_path))
+        parsed = parser_fn(raw_text, source_file=str(file_path))
         tx = prepare_for_staging(parsed)
         repo.upsert_tx(tx)
         transactions.append(tx)
+
+    if repo.has_reconcile_off({tx.account_alias for tx in transactions}):
+        raise ValueError("Cannot export OFX while reconcile status is off")
+
+    ofx_path = write_ofx(transactions, ofx_output_path)
+    report_path = write_review_report(transactions, report_output_path)
+
+    return RunSummary(
+        items_processed=len(transactions),
+        items_inserted=len(transactions),
+        items_review=sum(1 for tx in transactions if tx.needs_review),
+        db_path=db_path,
+        ofx_path=str(ofx_path),
+        report_path=str(report_path),
+    )
+
+
+def run_mp_online(
+    *,
+    access_token: str,
+    begin_date: str,
+    end_date: str,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+    owner: Literal["ricardo", "laura", "joint"] = "ricardo",
+    page_size: int = 50,
+) -> RunSummary:
+    from ..adapters.mp_api import MercadoPagoClient
+
+    repo = StagingRepo(db_path)
+    _ensure_db(repo, Path(db_path), schema_path)
+
+    client = MercadoPagoClient(access_token=access_token)
+    transactions: list[CanonicalTx] = []
+    for payment in client.search_payments(
+        begin_date=begin_date,
+        end_date=end_date,
+        status="approved",
+        page_size=page_size,
+    ):
+        try:
+            parsed = parse_payment(payment, owner=owner)
+        except ValueError:
+            continue
+        tx = prepare_for_staging(parsed)
+        repo.upsert_tx(tx)
+        transactions.append(tx)
+
+    if not transactions:
+        raise ValueError("No approved Mercado Pago payments found in date range")
 
     if repo.has_reconcile_off({tx.account_alias for tx in transactions}):
         raise ValueError("Cannot export OFX while reconcile status is off")

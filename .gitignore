@@ -51,3 +51,7 @@ temp_pdf_read/
 # OS
 .DS_Store
 Thumbs.db
+
+# Functional test artifacts (Windows-style paths created on Linux)
+/C:*
+/C:*/*

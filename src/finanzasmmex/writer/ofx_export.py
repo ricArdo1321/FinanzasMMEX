@@ -9,26 +9,44 @@ from ..models import CanonicalTx
 
 
 def write_ofx(transactions: Iterable[CanonicalTx], output_path: str | Path) -> Path:
-    path = safe_output_path(output_path, allowed_suffixes={".ofx"})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_ofx(transactions), encoding="utf-8")
-    return path
-
-
-def render_ofx(transactions: Iterable[CanonicalTx]) -> str:
     txs = list(transactions)
     if not txs:
         raise ValueError("OFX export requires at least one transaction")
 
     accounts = {tx.account_alias for tx in txs}
+    if len(accounts) == 1:
+        path = safe_output_path(output_path, allowed_suffixes={".ofx"})
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_render_ofx(txs), encoding="utf-8")
+        return path
+
+    # Multiple accounts: write one file per account, using alias as suffix
+    base = safe_output_path(output_path, allowed_suffixes={".ofx"})
+    base.parent.mkdir(parents=True, exist_ok=True)
+    stem = base.stem
+    suffix = base.suffix
+    last_path = base
+    for account_alias in sorted(accounts):
+        account_txs = [tx for tx in txs if tx.account_alias == account_alias]
+        path = base.with_name(f"{stem}_{account_alias}{suffix}")
+        path.write_text(_render_ofx(account_txs), encoding="utf-8")
+        last_path = path
+    return last_path
+
+
+def _render_ofx(transactions: list[CanonicalTx]) -> str:
+    if not transactions:
+        raise ValueError("OFX export requires at least one transaction")
+
+    accounts = {tx.account_alias for tx in transactions}
     if len(accounts) != 1:
-        raise ValueError("OFX export currently expects one account per file")
+        raise ValueError("OFX export requires one account per file")
 
     account_alias = next(iter(accounts))
     now = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    start_date = min(_ofx_date(tx) for tx in txs)
-    end_date = max(_ofx_date(tx) for tx in txs)
-    tx_blocks = "\n".join(_render_transaction(tx) for tx in txs)
+    start_date = min(_ofx_date(tx) for tx in transactions)
+    end_date = max(_ofx_date(tx) for tx in transactions)
+    tx_blocks = "\n".join(_render_transaction(tx) for tx in transactions)
 
     return f"""OFXHEADER:100
 DATA:OFXSGML
@@ -110,3 +128,7 @@ def _ofx_date(tx: CanonicalTx) -> str:
 
 def _value(value: str) -> str:
     return escape(value.replace("\r", " ").replace("\n", " "), quote=False)
+
+
+# Public alias kept for test imports and backward compat
+render_ofx = _render_ofx
