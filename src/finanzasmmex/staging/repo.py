@@ -3,8 +3,9 @@ import sqlite3
 from contextlib import closing
 from datetime import date
 from decimal import Decimal
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
+from ..etl.categorize import CategoryRule
 from ..models import CanonicalTx
 
 
@@ -211,6 +212,89 @@ class StagingRepo:
         )
         with closing(self._get_connection()) as conn:
             return conn.execute(sql, aliases).fetchone() is not None
+
+    def list_rules(self, *, active_only: bool = False) -> list[CategoryRule]:
+        sql = "SELECT * FROM category_rules"
+        params: list[Any] = []
+        if active_only:
+            sql += " WHERE active = 1"
+        sql += " ORDER BY active DESC, priority ASC, rule_id ASC"
+        with closing(self._get_connection()) as conn:
+            rows = conn.execute(sql, params).fetchall()
+            return [self._row_to_rule(row) for row in rows]
+
+    def add_rule(
+        self,
+        *,
+        pattern: str,
+        pattern_type: str,
+        merchant_norm: str,
+        category_name: str,
+        subcategory_name: str | None = None,
+        tags: list[str] | None = None,
+        fuzzy_threshold: int = 85,
+        priority: int = 100,
+    ) -> int:
+        sql = """
+        INSERT INTO category_rules (
+            pattern, pattern_type, merchant_norm, category_name,
+            subcategory_name, tags_json, fuzzy_threshold, priority
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(
+                sql,
+                (
+                    pattern,
+                    pattern_type,
+                    merchant_norm,
+                    category_name,
+                    subcategory_name,
+                    json.dumps(tags or []),
+                    fuzzy_threshold,
+                    priority,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def update_rule(self, rule_id: int, **fields: Any) -> bool:
+        allowed = {
+            "pattern", "pattern_type", "merchant_norm", "category_name",
+            "subcategory_name", "tags_json", "fuzzy_threshold", "priority", "active",
+        }
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"Unknown rule fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{col} = ?" for col in fields)
+        params = list(fields.values()) + [rule_id]
+        sql = f"UPDATE category_rules SET {assignments} WHERE rule_id = ?"
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_rule(self, rule_id: int) -> bool:
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(
+                "DELETE FROM category_rules WHERE rule_id = ?", (rule_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def _row_to_rule(self, row: sqlite3.Row) -> CategoryRule:
+        return CategoryRule(
+            rule_id=row["rule_id"],
+            pattern=row["pattern"],
+            pattern_type=row["pattern_type"],
+            merchant_norm=row["merchant_norm"],
+            category_name=row["category_name"],
+            subcategory_name=row["subcategory_name"],
+            tags=json.loads(row["tags_json"]),
+            fuzzy_threshold=row["fuzzy_threshold"],
+            priority=row["priority"],
+            active=bool(row["active"]),
+        )
 
     def _row_to_tx(self, row: sqlite3.Row) -> CanonicalTx:
         return CanonicalTx(

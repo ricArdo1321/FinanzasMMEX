@@ -692,6 +692,93 @@ def _run_login(args: argparse.Namespace) -> NoReturn:
     )
 
 
+def _run_rules_list(args: argparse.Namespace) -> NoReturn:
+    repo = StagingRepo(args.db)
+    rules = repo.list_rules(active_only=args.active_only)
+    items = [
+        {
+            "rule_id": r.rule_id,
+            "pattern": r.pattern,
+            "pattern_type": r.pattern_type,
+            "merchant_norm": r.merchant_norm,
+            "category_name": r.category_name,
+            "subcategory_name": r.subcategory_name,
+            "tags": r.tags,
+            "fuzzy_threshold": r.fuzzy_threshold,
+            "priority": r.priority,
+            "active": r.active,
+        }
+        for r in rules
+    ]
+    _emit(True, data={"items": items, "count": len(items)})
+
+
+def _run_rules_add(args: argparse.Namespace) -> NoReturn:
+    repo = StagingRepo(args.db)
+    rule_id = repo.add_rule(
+        pattern=args.pattern,
+        pattern_type=args.pattern_type,
+        merchant_norm=args.merchant_norm,
+        category_name=args.category_name,
+        subcategory_name=args.subcategory_name or None,
+        tags=_parse_tags(args.tags),
+        fuzzy_threshold=args.fuzzy_threshold,
+        priority=args.priority,
+    )
+    _emit(True, data={"rule_id": rule_id, "created": True})
+
+
+def _run_rules_update(args: argparse.Namespace) -> NoReturn:
+    fields: dict[str, object] = {}
+    for key, arg_key in [
+        ("pattern", "pattern"),
+        ("pattern_type", "pattern_type"),
+        ("merchant_norm", "merchant_norm"),
+        ("category_name", "category_name"),
+        ("subcategory_name", "subcategory_name"),
+        ("fuzzy_threshold", "fuzzy_threshold"),
+        ("priority", "priority"),
+    ]:
+        val = getattr(args, arg_key, None)
+        if val is not None:
+            fields[key] = val
+    if args.tags is not None:
+        fields["tags_json"] = json.dumps(_parse_tags(args.tags))
+    if args.active is not None:
+        fields["active"] = int(args.active)
+    if not fields:
+        _validation_error("At least one field must be provided")
+    repo = StagingRepo(args.db)
+    ok = repo.update_rule(args.rule_id, **fields)
+    if not ok:
+        _emit(
+            False,
+            errors=[{
+                "code": "VALIDATION_ERROR",
+                "message": "Rule not found",
+                "details": {"rule_id": args.rule_id},
+            }],
+            exit_code=2,
+        )
+    _emit(True, data={"rule_id": args.rule_id, "updated_fields": sorted(fields)})
+
+
+def _run_rules_delete(args: argparse.Namespace) -> NoReturn:
+    repo = StagingRepo(args.db)
+    ok = repo.delete_rule(args.rule_id)
+    if not ok:
+        _emit(
+            False,
+            errors=[{
+                "code": "VALIDATION_ERROR",
+                "message": "Rule not found",
+                "details": {"rule_id": args.rule_id},
+            }],
+            exit_code=2,
+        )
+    _emit(True, data={"rule_id": args.rule_id, "deleted": True})
+
+
 def main() -> None:
     argv = sys.argv[1:]
     parser = ContractArgumentParser(description="FinanzasMMEX CLI")
@@ -908,12 +995,82 @@ def main() -> None:
     )
     quickadd_create_parser.add_argument("--source-ref", default=None)
 
+    # category-rules command
+    rules_parser = subparsers.add_parser(
+        "category-rules",
+        help="Manage categorization rules",
+    )
+    rules_sub = rules_parser.add_subparsers(
+        dest="rules_action",
+        required=True,
+        parser_class=ContractArgumentParser,
+    )
+
+    rules_list_parser = rules_sub.add_parser("list", help="List categorization rules")
+    rules_list_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    rules_list_parser.add_argument(
+        "--active-only", action="store_true", help="Only show active rules"
+    )
+
+    rules_add_parser = rules_sub.add_parser("add", help="Add a categorization rule")
+    rules_add_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    rules_add_parser.add_argument("--pattern", required=True, help="Search pattern")
+    rules_add_parser.add_argument(
+        "--pattern-type",
+        required=True,
+        choices=["substr", "regex", "fuzzy"],
+        help="Pattern matching type",
+    )
+    rules_add_parser.add_argument(
+        "--merchant-norm", required=True, help="Normalized merchant name"
+    )
+    rules_add_parser.add_argument("--category-name", required=True, help="Category")
+    rules_add_parser.add_argument(
+        "--subcategory-name", default=None, help="Subcategory name"
+    )
+    rules_add_parser.add_argument("--tags", default=None, help="Comma-separated tags")
+    rules_add_parser.add_argument(
+        "--fuzzy-threshold", type=int, default=85, help="Fuzzy threshold 0-100"
+    )
+    rules_add_parser.add_argument(
+        "--priority", type=int, default=100, help="Rule priority (lower = wins)"
+    )
+
+    rules_update_parser = rules_sub.add_parser(
+        "update", help="Update a categorization rule"
+    )
+    rules_update_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    rules_update_parser.add_argument("--rule-id", type=int, required=True)
+    rules_update_parser.add_argument("--pattern", default=None)
+    rules_update_parser.add_argument(
+        "--pattern-type", choices=["substr", "regex", "fuzzy"], default=None
+    )
+    rules_update_parser.add_argument("--merchant-norm", default=None)
+    rules_update_parser.add_argument("--category-name", default=None)
+    rules_update_parser.add_argument("--subcategory-name", default=None)
+    rules_update_parser.add_argument("--tags", default=None)
+    rules_update_parser.add_argument("--fuzzy-threshold", type=int, default=None)
+    rules_update_parser.add_argument("--priority", type=int, default=None)
+    rules_update_parser.add_argument(
+        "--active",
+        default=None,
+        choices=["0", "1"],
+        help="Set to 0 to deactivate, 1 to activate",
+    )
+
+    rules_delete_parser = rules_sub.add_parser(
+        "delete", help="Delete a categorization rule"
+    )
+    rules_delete_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    rules_delete_parser.add_argument("--rule-id", type=int, required=True)
+
     help_parsers = {
         "init": init_parser,
         "run": run_parser,
         "login": login_parser,
         "review": review_parser,
         "quickadd": quickadd_parser,
+        "category-rules": rules_parser,
     }
 
     try:
@@ -985,6 +1142,15 @@ def main() -> None:
         elif args.command == "quickadd":
             if args.quickadd_action == "create":
                 _run_quickadd_create(args)
+        elif args.command == "category-rules":
+            if args.rules_action == "list":
+                _run_rules_list(args)
+            elif args.rules_action == "add":
+                _run_rules_add(args)
+            elif args.rules_action == "update":
+                _run_rules_update(args)
+            elif args.rules_action == "delete":
+                _run_rules_delete(args)
     except ValueError as e:
         _emit(
             False,
