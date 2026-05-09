@@ -1,6 +1,8 @@
 import argparse
+import getpass
 import json
 import os
+import sqlite3
 import sys
 import uuid
 from datetime import date, timedelta
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from .adapters.mp_api import MercadoPagoCredentialsError, MercadoPagoTemporaryError
+from .adapters.scraping_base import ScrapingError, ScrapingLoginError
 from .etl.fitid import ensure_fitid
 from .etl.normalize import parse_clp_amount
 from .models import CanonicalTx
@@ -21,10 +24,13 @@ from .orchestrator.jobs import (
     run_mp_online,
     run_mp_to_ofx,
     run_pending_to_sql,
+    run_scraping_be,
+    run_scraping_cmr,
 )
 from .secrets.vault import Vault
 from .staging.repo import StagingRepo
 from .writer.mmex_sql import (
+    MmexBackupError,
     MmexLockedError,
     MmexMappingError,
     MmexSafetyError,
@@ -243,7 +249,7 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
             },
         )
 
-    token = os.environ.get(MP_TOKEN_ENV) or _read_vault_secret(MP_VAULT_KEY)
+    token = _read_vault_secret(MP_VAULT_KEY)
     if token is None:
         _emit(
             False,
@@ -344,6 +350,7 @@ def _run_sql(args: argparse.Namespace) -> NoReturn:
             "staging.db does not exist",
             {"field": "--db", "db_path": args.db},
         )
+    _validate_staging_db(args.db)
     # Echo only the basename of the .mmb in error envelopes — the full
     # absolute path is local file-system metadata that should not surface
     # to UIs or logs.
@@ -356,6 +363,7 @@ def _run_sql(args: argparse.Namespace) -> NoReturn:
             allow_shadow_write=args.allow_shadow_write,
         )
     except MmexLockedError as exc:
+        _record_deferred_job(args.db, "mmex_sql", str(exc))
         _emit(
             False,
             errors=[
@@ -371,6 +379,21 @@ def _run_sql(args: argparse.Namespace) -> NoReturn:
         _validation_error(
             str(exc),
             {"exception_type": type(exc).__name__, "mmex_db": mmex_basename},
+        )
+    except MmexBackupError as exc:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": "TEMPORARY_FAILURE",
+                    "message": str(exc),
+                    "details": {
+                        "exception_type": type(exc).__name__,
+                        "mmex_db": mmex_basename,
+                    },
+                }
+            ],
+            exit_code=5,
         )
     else:
         # Reachable only on a successful run; the except branches above
@@ -429,6 +452,52 @@ def _parse_bool_flag(value: str, field_name: str) -> bool:
     )
 
 
+def _validate_staging_db(db_path: str) -> None:
+    path = Path(db_path)
+    if not path.is_file():
+        _validation_error(
+            "staging.db does not exist",
+            {"field": "--db", "db_path": db_path},
+        )
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+    except sqlite3.Error as exc:
+        _validation_error(
+            "staging.db is not readable",
+            {"field": "--db", "exception_type": type(exc).__name__},
+        )
+    required = {"schema_version", "canonical_tx", "category_rules", "job_runs"}
+    missing = sorted(required - tables)
+    if missing:
+        _validation_error(
+            "staging.db schema is not initialized",
+            {"field": "--db", "missing_tables": missing},
+        )
+
+
+def _record_deferred_job(db_path: str, job_name: str, error_message: str) -> None:
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO job_runs (
+                    run_id, job_name, started_at, finished_at, status,
+                    error_message
+                ) VALUES (?, ?, datetime('now'), datetime('now'), ?, ?)
+                """,
+                (str(uuid.uuid4()), job_name, "deferred", error_message),
+            )
+            conn.commit()
+    except sqlite3.Error:
+        return
+
+
 def _tx_to_dict(tx: CanonicalTx) -> dict[str, Any]:
     return {
         "tx_uid": tx.tx_uid,
@@ -461,6 +530,7 @@ def _tx_to_dict(tx: CanonicalTx) -> dict[str, Any]:
 
 
 def _run_review_list(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     repo = StagingRepo(args.db)
     txs = repo.list_txs(
         owner=args.owner,
@@ -491,6 +561,7 @@ def _run_review_list(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_review_update(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     fields: dict[str, object] = {}
     if args.owner is not None:
         if args.owner not in VALID_OWNERS:
@@ -560,6 +631,7 @@ def _run_review_update(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_review_resolve(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     if args.status not in RESOLVE_STATUSES:
         _validation_error(
             "status must be one of exported|inserted|rejected",
@@ -589,6 +661,7 @@ def _run_review_resolve(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     if args.owner not in VALID_OWNERS:
         _validation_error(
             "owner must be one of ricardo|laura|joint",
@@ -683,7 +756,64 @@ def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_login(args: argparse.Namespace) -> NoReturn:
-    if args.source != "mp":
+    if args.source == "mp":
+        token = _read_secret_from_stdin_or_prompt("Mercado Pago access token: ")
+        if not token:
+            _emit(
+                False,
+                errors=[
+                    {
+                        "code": "CREDENTIALS_REQUIRED",
+                        "message": (
+                            "Mercado Pago access token must be provided via "
+                            "stdin or secure prompt"
+                        ),
+                        "details": {
+                            "source": args.source,
+                            "input": "stdin_or_secure_prompt",
+                        },
+                    }
+                ],
+                exit_code=3,
+            )
+        _store_vault_secret(MP_VAULT_KEY, token)
+        _emit(
+            True,
+            data={
+                "message": "Mercado Pago access token stored in vault",
+                "source": args.source,
+                "vault_key": MP_VAULT_KEY,
+            },
+        )
+    elif args.source in {"be", "cmr"}:
+        # For scrapers, login means running the headful browser to capture storage state
+        from .adapters.be_scraping import BancoEstadoScraper
+        from .adapters.cmr_scraping import CMRScraper
+
+        scraper_cls = BancoEstadoScraper if args.source == "be" else CMRScraper
+        scraper = scraper_cls()
+
+        def login_action(page: Any, context: Any) -> bool:
+            logged_in = scraper.wait_for_user_login(
+                page, scraper.LOGIN_URL, scraper.DASHBOARD_INDICATOR
+            )
+            if not logged_in:
+                raise ScrapingLoginError(
+                    f"{args.source} login was not completed",
+                    details={"source": args.source},
+                )
+            scraper.save_storage_state(context)
+            return True
+
+        scraper.run_headful(login_action)
+        _emit(
+            True,
+            data={
+                "message": f"Storage state captured for {args.source}",
+                "source": args.source,
+            },
+        )
+    else:
         _emit(
             False,
             errors=[
@@ -695,37 +825,16 @@ def _run_login(args: argparse.Namespace) -> NoReturn:
             ],
             exit_code=2,
         )
-    token = os.environ.get(MP_TOKEN_ENV, "").strip()
-    if not token:
-        _emit(
-            False,
-            errors=[
-                {
-                    "code": "CREDENTIALS_REQUIRED",
-                    "message": (
-                        "Mercado Pago access token must be provided via "
-                        f"the {MP_TOKEN_ENV} environment variable"
-                    ),
-                    "details": {
-                        "source": args.source,
-                        "expected_env": MP_TOKEN_ENV,
-                    },
-                }
-            ],
-            exit_code=3,
-        )
-    _store_vault_secret(MP_VAULT_KEY, token)
-    _emit(
-        True,
-        data={
-            "message": "Mercado Pago access token stored in vault",
-            "source": args.source,
-            "vault_key": MP_VAULT_KEY,
-        },
-    )
+
+
+def _read_secret_from_stdin_or_prompt(prompt: str) -> str:
+    if sys.stdin.isatty():
+        return getpass.getpass(prompt).strip()
+    return sys.stdin.readline().strip()
 
 
 def _run_rules_list(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     repo = StagingRepo(args.db)
     rules = repo.list_rules(active_only=args.active_only)
     items = [
@@ -747,6 +856,7 @@ def _run_rules_list(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_rules_add(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     repo = StagingRepo(args.db)
     rule_id = repo.add_rule(
         pattern=args.pattern,
@@ -762,6 +872,7 @@ def _run_rules_add(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_rules_update(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     fields: dict[str, object] = {}
     for key, arg_key in [
         ("pattern", "pattern"),
@@ -797,6 +908,7 @@ def _run_rules_update(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_rules_delete(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
     repo = StagingRepo(args.db)
     ok = repo.delete_rule(args.rule_id)
     if not ok:
@@ -908,7 +1020,7 @@ def main() -> None:
     )
     login_parser.add_argument(
         "--source",
-        choices=["mp"],
+        choices=["mp", "be", "cmr"],
         required=True,
         help="Credential source to configure",
     )
@@ -1097,20 +1209,30 @@ def main() -> None:
     rules_delete_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
     rules_delete_parser.add_argument("--rule-id", type=int, required=True)
 
-    help_parsers = {
-        "init": init_parser,
-        "run": run_parser,
-        "login": login_parser,
-        "review": review_parser,
-        "quickadd": quickadd_parser,
-        "category-rules": rules_parser,
+    help_parsers: dict[tuple[str, ...], argparse.ArgumentParser] = {
+        ("init",): init_parser,
+        ("run",): run_parser,
+        ("login",): login_parser,
+        ("review",): review_parser,
+        ("review", "list"): review_list_parser,
+        ("review", "update"): review_update_parser,
+        ("review", "resolve"): review_resolve_parser,
+        ("quickadd",): quickadd_parser,
+        ("quickadd", "create"): quickadd_create_parser,
+        ("category-rules",): rules_parser,
+        ("category-rules", "list"): rules_list_parser,
+        ("category-rules", "add"): rules_add_parser,
+        ("category-rules", "update"): rules_update_parser,
+        ("category-rules", "delete"): rules_delete_parser,
     }
 
     try:
         if argv in (["-h"], ["--help"]):
             _emit(True, data={"help": parser.format_help()})
-        if len(argv) >= 2 and argv[-1] in ("-h", "--help") and argv[0] in help_parsers:
-            _emit(True, data={"help": help_parsers[argv[0]].format_help()})
+        if len(argv) >= 2 and argv[-1] in ("-h", "--help"):
+            key = tuple(argv[:-1])
+            if key in help_parsers:
+                _emit(True, data={"help": help_parsers[key].format_help()})
 
         args = parser.parse_args(argv)
 
@@ -1141,15 +1263,17 @@ def main() -> None:
             if args.writer == "sql":
                 _run_sql(args)
             else:
-                if args.source not in {"gmail", "mp", "all"}:
+                if args.source not in {
+                    "gmail", "mp", "all", "scraping-be", "scraping-cmr"
+                }:
                     _emit(
                         False,
                         errors=[
                             {
                                 "code": "VALIDATION_ERROR",
                                 "message": (
-                                    "Only gmail, mp, and all sources are implemented "
-                                    "in this cut"
+                                    "Only gmail, mp, all, and scraping sources "
+                                    "are implemented"
                                 ),
                                 "details": {"source": args.source},
                             }
@@ -1161,6 +1285,22 @@ def main() -> None:
                     _run_gmail(args)
                 elif args.source == "all":
                     _run_gmail_all(args)
+                elif args.source == "scraping-be":
+                    result = run_scraping_be(
+                        db_path=args.db,
+                        schema_path=args.schema,
+                        ofx_output_path=args.ofx_output,
+                        report_output_path=args.report_output,
+                    )
+                    _emit(True, data=result.as_dict())
+                elif args.source == "scraping-cmr":
+                    result = run_scraping_cmr(
+                        db_path=args.db,
+                        schema_path=args.schema,
+                        ofx_output_path=args.ofx_output,
+                        report_output_path=args.report_output,
+                    )
+                    _emit(True, data=result.as_dict())
                 else:
                     _run_mp(args)
         elif args.command == "login":
@@ -1184,6 +1324,30 @@ def main() -> None:
                 _run_rules_update(args)
             elif args.rules_action == "delete":
                 _run_rules_delete(args)
+    except ScrapingLoginError as e:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": e.error_code,
+                    "message": str(e),
+                    "details": e.details,
+                }
+            ],
+            exit_code=e.exit_code,
+        )
+    except ScrapingError as e:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": e.error_code,
+                    "message": str(e),
+                    "details": e.details,
+                }
+            ],
+            exit_code=e.exit_code,
+        )
     except ValueError as e:
         _emit(
             False,

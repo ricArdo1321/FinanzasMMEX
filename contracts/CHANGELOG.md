@@ -2,6 +2,62 @@
 
 Registra cambios al contrato JSON `{ok, data, errors, warnings, run_id}` consumido por la UI WPF. La forma del envelope se valida contra `contracts/envelope.schema.json`.
 
+## 2026-05-09 - Phase 3 scraping headful
+
+### Added
+
+- `run --source scraping-be|scraping-cmr` queda como superficie publica del
+  CLI para scraping headful asistido.
+  - `data` mantiene los campos historicos de `RunSummary` y agrega
+    `reconcile_status` y `reconcile_delta`.
+- `login --source be|cmr` captura `storage_state` en vault/keyring solo cuando
+  el login semi-asistido fue confirmado.
+- Errores typed de scraping:
+  - Login no completado -> `CREDENTIALS_REQUIRED`, exit `3`.
+  - CAPTCHA/challenge -> `SCRAPING_CHALLENGE`, exit `5`.
+  - Cambio estructural/selector roto -> `SCRAPING_STRUCTURE_CHANGED`, exit `5`.
+- Los jobs de scraping registran `reconcile_log` por cuenta/periodo. Estado
+  `off` bloquea OFX y SQL; falta de balances queda como `manual_review`.
+
+### Breaking changes
+
+Ninguno. Los campos nuevos de `data` son aditivos y los comandos existentes
+mantienen el envelope.
+
+## 2026-05-08 - Phase 2 gate hardening
+
+### Added
+
+- `category-rules list|add|update|delete` queda documentado como superficie
+  publica del CLI:
+  - `list`: `data.items[]` contiene `rule_id`, `pattern`, `pattern_type`,
+    `merchant_norm`, `category_name`, `subcategory_name`, `tags[]`,
+    `fuzzy_threshold`, `priority`, `active`; `data.count`.
+  - `add`: `data.rule_id`, `data.created`.
+  - `update`: `data.rule_id`, `data.updated_fields[]`.
+  - `delete`: `data.rule_id`, `data.deleted`.
+- `review`, `quickadd`, `category-rules` y `run --writer sql` validan que
+  `--db` exista y tenga schema staging antes de ejecutar operaciones.
+- `run --writer sql` registra `job_runs.status='deferred'` cuando MMEX esta
+  bloqueado y emite `MMEX_LOCKED` con exit code `4`.
+
+### Changed
+
+- `run --source mp` online lee tokens solo desde vault/keyring; ya no usa
+  `MP_ACCESS_TOKEN` como fallback de ejecucion normal.
+- `login --source mp` recibe el token por stdin o prompt seguro y lo guarda
+  en vault/keyring; no usa variables de entorno como transporte de secreto.
+- `run --writer sql` restringe el destino Phase 2 a `finanza_test.mmb`,
+  exige `staging_repo` para validar `reconcile_log`, bloquea backups dentro
+  del repo, exige backup post-write y deduplica ambas patas de transferencias.
+- `replay --since YYYY-MM-DD` queda diferido fuera del contrato estable de
+  Fase 2 hasta implementar la restauracion operativa completa.
+
+### Breaking changes
+
+Ninguno para consumidores documentados. Los cambios endurecen entradas
+inseguras o no documentadas.
+
 ## 2026-05-04 - Issue #3 - Fase 2 SQL writer
 
 ### Added

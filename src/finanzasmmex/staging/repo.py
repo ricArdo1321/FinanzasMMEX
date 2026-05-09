@@ -49,7 +49,7 @@ class StagingRepo:
             mmex_status = excluded.mmex_status,
             updated_at = datetime('now')
         """
-        
+
         batch_params = []
         for tx in txs:
             params = (
@@ -92,9 +92,11 @@ class StagingRepo:
             # (leg A points to leg B which is also being inserted).
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.executemany(sql, batch_params)
-            
+
             # Ensure integrity before committing
-            violations = conn.execute("PRAGMA foreign_key_check(canonical_tx)").fetchall()
+            violations = conn.execute(
+                "PRAGMA foreign_key_check(canonical_tx)"
+            ).fetchall()
             if violations:
                 # Row shape: (table, rowid, parent_table, fkid)
                 v = violations[0]
@@ -102,7 +104,7 @@ class StagingRepo:
                     f"Foreign key constraint failed in {v[0]} rowid {v[1]} "
                     f"referencing {v[2]}"
                 )
-            
+
             conn.commit()
 
     def get_pending_txs(self) -> List[CanonicalTx]:
@@ -237,6 +239,48 @@ class StagingRepo:
         )
         with closing(self._get_connection()) as conn:
             return conn.execute(sql, aliases).fetchone() is not None
+
+    def insert_reconcile_log(
+        self,
+        *,
+        account_alias: str,
+        period_start: str,
+        period_end: str,
+        balance_initial: Decimal,
+        balance_final: Decimal,
+        sum_credits: Decimal,
+        sum_debits: Decimal,
+        expected_final: Decimal,
+        status: str,
+        delta: Decimal,
+        notes: str | None = None,
+    ) -> int:
+        sql = """
+        INSERT INTO reconcile_log (
+            account_alias, period_start, period_end, balance_initial,
+            balance_final, sum_credits, sum_debits, expected_final,
+            status, delta, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(
+                sql,
+                (
+                    account_alias,
+                    period_start,
+                    period_end,
+                    float(balance_initial),
+                    float(balance_final),
+                    float(sum_credits),
+                    float(sum_debits),
+                    float(expected_final),
+                    status,
+                    float(delta),
+                    notes,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid  # type: ignore[return-value]
 
     def list_rules(self, *, active_only: bool = False) -> list[CategoryRule]:
         sql = "SELECT * FROM category_rules"

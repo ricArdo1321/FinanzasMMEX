@@ -1,13 +1,17 @@
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, timedelta
+from decimal import Decimal
 from html import escape
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from ..adapters.mp_api import MercadoPagoClient, MercadoPagoParseError, parse_payment
+from ..adapters.scraping_base import ScrapingResult
 from ..artifacts import safe_output_path
-from ..etl.pipeline import prepare_for_staging
+from ..etl.merge import merge_scraped_txs
+from ..etl.pipeline import prepare_batch_for_staging
 from ..models import CanonicalTx
 from ..staging.repo import StagingRepo
 from ..writer.mmex_sql import SqlWriteSummary, write_sql
@@ -22,8 +26,10 @@ class RunSummary:
     db_path: str
     ofx_path: str
     report_path: str
+    reconcile_status: str | None = None
+    reconcile_delta: str | None = None
 
-    def as_dict(self) -> dict[str, int | str]:
+    def as_dict(self) -> dict[str, int | str | None]:
         return {
             "items_processed": self.items_processed,
             "items_inserted": self.items_inserted,
@@ -31,6 +37,8 @@ class RunSummary:
             "db_path": self.db_path,
             "ofx_path": self.ofx_path,
             "report_path": self.report_path,
+            "reconcile_status": self.reconcile_status,
+            "reconcile_delta": self.reconcile_delta,
         }
 
 
@@ -96,6 +104,196 @@ def run_pending_to_sql(
         mmex_tx_ids=summary.mmex_tx_ids,
         mmex_account_ids=summary.mmex_account_ids,
     )
+
+
+def run_scraping_be(
+    *,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+    since_days: int = 7,
+) -> RunSummary:
+    from ..adapters.be_scraping import BancoEstadoScraper
+
+    repo = StagingRepo(db_path)
+    _ensure_db(repo, Path(db_path), schema_path)
+
+    scraper = BancoEstadoScraper()
+    since_date = date.today() - timedelta(days=since_days)
+    scrape_result = _coerce_scraping_result(scraper.scrape(since_date), since_date)
+    scraped_txs = scrape_result.transactions
+
+    if not scraped_txs:
+        return RunSummary(0, 0, 0, db_path, ofx_output_path, report_output_path)
+
+    rules = repo.list_rules(active_only=True)
+    prepared_txs = prepare_batch_for_staging(scraped_txs, rules=rules)
+    merged_txs = merge_scraped_txs(repo, prepared_txs)
+
+    # Upsert results
+    repo.upsert_batch(merged_txs)
+    reconcile_status, reconcile_delta = _record_scraping_reconcile(
+        repo, merged_txs, scrape_result
+    )
+    if reconcile_status == "off":
+        raise ValueError("Cannot export OFX while reconcile status is off")
+
+    ofx_path = write_ofx(merged_txs, ofx_output_path)
+    report_path = write_review_report(merged_txs, report_output_path)
+
+    return RunSummary(
+        items_processed=len(scraped_txs),
+        items_inserted=len(merged_txs),
+        items_review=sum(1 for tx in merged_txs if tx.needs_review),
+        db_path=db_path,
+        ofx_path=str(ofx_path),
+        report_path=str(report_path),
+        reconcile_status=reconcile_status,
+        reconcile_delta=str(reconcile_delta) if reconcile_delta is not None else None,
+    )
+
+
+def run_scraping_cmr(
+    *,
+    db_path: str,
+    schema_path: str,
+    ofx_output_path: str,
+    report_output_path: str,
+    since_days: int = 7,
+) -> RunSummary:
+    from ..adapters.cmr_scraping import CMRScraper
+
+    repo = StagingRepo(db_path)
+    _ensure_db(repo, Path(db_path), schema_path)
+
+    scraper = CMRScraper()
+    since_date = date.today() - timedelta(days=since_days)
+    scrape_result = _coerce_scraping_result(scraper.scrape(since_date), since_date)
+    scraped_txs = scrape_result.transactions
+
+    if not scraped_txs:
+        return RunSummary(0, 0, 0, db_path, ofx_output_path, report_output_path)
+
+    rules = repo.list_rules(active_only=True)
+    prepared_txs = prepare_batch_for_staging(scraped_txs, rules=rules)
+    merged_txs = merge_scraped_txs(repo, prepared_txs)
+
+    # Upsert results
+    repo.upsert_batch(merged_txs)
+    reconcile_status, reconcile_delta = _record_scraping_reconcile(
+        repo, merged_txs, scrape_result
+    )
+    if reconcile_status == "off":
+        raise ValueError("Cannot export OFX while reconcile status is off")
+
+    ofx_path = write_ofx(merged_txs, ofx_output_path)
+    report_path = write_review_report(merged_txs, report_output_path)
+
+    return RunSummary(
+        items_processed=len(scraped_txs),
+        items_inserted=len(merged_txs),
+        items_review=sum(1 for tx in merged_txs if tx.needs_review),
+        db_path=db_path,
+        ofx_path=str(ofx_path),
+        report_path=str(report_path),
+        reconcile_status=reconcile_status,
+        reconcile_delta=str(reconcile_delta) if reconcile_delta is not None else None,
+    )
+
+
+def _coerce_scraping_result(
+    result: ScrapingResult | list[CanonicalTx],
+    since_date: date,
+) -> ScrapingResult:
+    if isinstance(result, ScrapingResult):
+        return result
+    return ScrapingResult(
+        transactions=list(result),
+        period_start=since_date,
+        period_end=date.today(),
+        balances={},
+    )
+
+
+def _record_scraping_reconcile(
+    repo: StagingRepo,
+    transactions: list[CanonicalTx],
+    result: ScrapingResult,
+) -> tuple[str | None, Decimal | None]:
+    if not transactions:
+        return None, None
+
+    period_start = result.period_start or min(_tx_date(tx) for tx in transactions)
+    period_end = result.period_end or max(_tx_date(tx) for tx in transactions)
+    statuses: list[str] = []
+    deltas: list[Decimal] = []
+
+    for account_alias in sorted({tx.account_alias for tx in transactions}):
+        account_txs = [tx for tx in transactions if tx.account_alias == account_alias]
+        sum_credits = sum(
+            (tx.amount for tx in account_txs if tx.direction == "credit"),
+            Decimal("0.00"),
+        )
+        sum_debits = sum(
+            (tx.amount for tx in account_txs if tx.direction == "debit"),
+            Decimal("0.00"),
+        )
+
+        balances = result.balances.get(account_alias)
+        if balances is None:
+            status = "manual_review"
+            balance_initial = Decimal("0.00")
+            balance_final = Decimal("0.00")
+            expected_final = Decimal("0.00")
+            delta = Decimal("0.00")
+            notes = "Scraping source did not provide balances"
+        else:
+            balance_initial, balance_final = balances
+            expected_final = balance_initial + sum_credits - sum_debits
+            delta = balance_final - expected_final
+            status = _reconcile_status(delta)
+            notes = None
+
+        repo.insert_reconcile_log(
+            account_alias=account_alias,
+            period_start=period_start.isoformat(),
+            period_end=period_end.isoformat(),
+            balance_initial=balance_initial,
+            balance_final=balance_final,
+            sum_credits=sum_credits,
+            sum_debits=sum_debits,
+            expected_final=expected_final,
+            status=status,
+            delta=delta,
+            notes=notes,
+        )
+        statuses.append(status)
+        deltas.append(delta)
+
+    return _overall_reconcile_status(statuses), max(deltas, key=lambda d: abs(d))
+
+
+def _tx_date(tx: CanonicalTx) -> date:
+    tx_date = tx.posted_date or tx.booking_date or tx.event_date
+    if tx_date is None:
+        raise ValueError("Cannot reconcile scraping transaction without a date")
+    return tx_date
+
+
+def _reconcile_status(delta: Decimal) -> str:
+    if delta == Decimal("0.00"):
+        return "ok"
+    if abs(delta) <= Decimal("100.00"):
+        return "minor"
+    return "off"
+
+
+def _overall_reconcile_status(statuses: list[str]) -> str:
+    for status in ("off", "manual_review", "minor", "ok"):
+        if status in statuses:
+            return status
+    return "manual_review"
 
 
 def run_gmail_bancoestado_to_ofx(
@@ -365,8 +563,13 @@ def run_mp_to_ofx(
     _ensure_db(repo, Path(db_path), schema_path)
 
     parsed_items: list[CanonicalTx] = []
-    for payload in payloads:
-        parsed = parse_payment(payload, source_file=str(input_path), owner=owner)
+    for payload, raw_text in payloads:
+        parsed = parse_payment(
+            payload,
+            source_file=str(input_path),
+            raw_text=raw_text,
+            owner=owner,
+        )
         parsed_items.append(parsed)
 
     # Load rules from DB
@@ -391,29 +594,32 @@ def run_mp_to_ofx(
     )
 
 
-def _load_mp_payloads(input_path: Path) -> list[Mapping[str, Any]]:
+def _load_mp_payloads(input_path: Path) -> list[tuple[Mapping[str, Any], str]]:
     if input_path.is_file():
         return _payloads_from_file(input_path)
     if input_path.is_dir():
         files = sorted(
             p for p in input_path.iterdir() if p.is_file() and p.suffix == ".json"
         )
-        out: list[Mapping[str, Any]] = []
+        out: list[tuple[Mapping[str, Any], str]] = []
         for f in files:
             out.extend(_payloads_from_file(f))
         return out
     raise ValueError(f"Input path does not exist: {input_path}")
 
 
-def _payloads_from_file(file_path: Path) -> list[Mapping[str, Any]]:
+def _payloads_from_file(file_path: Path) -> list[tuple[Mapping[str, Any], str]]:
     raw = file_path.read_text(encoding="utf-8")
     data = json.loads(raw)
     if isinstance(data, list):
-        return [_require_mapping(item, file_path) for item in data]
+        return [(_require_mapping(item, file_path), raw) for item in data]
     if isinstance(data, dict):
         if isinstance(data.get("results"), list):
-            return [_require_mapping(item, file_path) for item in data["results"]]
-        return [data]
+            return [
+                (_require_mapping(item, file_path), raw)
+                for item in data["results"]
+            ]
+        return [(data, raw)]
     raise ValueError(f"Unexpected MP payload shape in {file_path}")
 
 
