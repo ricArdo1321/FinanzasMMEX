@@ -405,5 +405,39 @@ Checklists locales:
 - `secrets-pii-auditor`: baseline presente, `detect_secrets` sin nuevos
   hallazgos, fixtures con dominios `example.com` solamente.
 
-Resultado: Fase 4 queda tecnicamente lista por checks locales. Cierre remoto de
-issues queda pendiente por bloqueo de permisos de GitHub CLI en el entorno.
+Resultado: Fase 4 queda tecnicamente lista por checks locales. Commit
+`156072b9d90ff7d8b4f732b79de3b482464bdf34` fue empujado a
+`feat/phase-2.5-internal-transfers` y se cerraron en GitHub #36, #37 y el padre
+#5. #17 permanece abierto como gate operativo de Phase 2, no como bloqueo de
+codigo de Phase 4.
+
+---
+
+# Issue #17 - Fase 2.4 Shadow-mode 1 semana contra finanza_test.mmb
+
+## Checklist
+
+- [x] Confirmar que #17 es el siguiente issue abierto accionable de Phase 2.
+- [x] Revisar runbook `docs/shadow-mode/phase2-week-1.md`.
+- [x] Buscar `finanza_test.mmb` operativo fuera de artefactos `.pytest-*`.
+- [x] Revisar si el `staging.db` local tiene lote real para shadow-mode.
+- [x] Documentar bloqueo sin fabricar evidencia.
+- [ ] Ejecutar 7 dias calendario reales contra `finanza_test.mmb`.
+- [ ] Registrar segunda corrida idempotente por dia.
+- [ ] Comentar/cerrar #17 solo con evidencia real completa.
+
+## Revision
+
+Preflight ejecutado el 2026-05-10 18:21 -04:00. No se puede iniciar el dia 1
+de shadow-mode todavia:
+
+- No se encontro `C:\Finanzas\finanza_test.mmb` operativo.
+- El `staging.db` del repo existe, pero contiene `canonical_tx=0`,
+  `reconcile_log=0` y `job_runs=0`.
+- Los `.mmb` visibles corresponden a carpetas temporales `.pytest-*`; no son
+  evidencia operacional aceptable.
+
+Resultado: #17 queda abierto y bloqueado por insumos reales. El proximo paso es
+proveer o generar fuera del repo `C:\Finanzas\staging.db` con lote real y
+`C:\Finanzas\finanza_test.mmb`, luego ejecutar el comando documentado en
+`docs/shadow-mode/phase2-week-1.md` durante 7 dias.

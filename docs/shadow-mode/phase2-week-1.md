@@ -1,6 +1,7 @@
 # Phase 2 Shadow Mode - Week 1
 
-Estado: pendiente de ejecucion real.
+Estado: bloqueado para ejecucion real. Preflight 2026-05-10 18:21 -04:00
+sin `finanza_test.mmb` operativo ni lote staging.
 
 Este documento existe para cerrar la brecha de auditoria, no como evidencia
 retroactiva. Phase 2 solo puede declararse cerrada cuando esta tabla tenga al
@@ -29,6 +30,30 @@ menos 7 dias calendario de corridas reales contra `finanza_test.mmb`.
 | 5 | Pendiente | Pendiente | 0 | 0 | Pendiente | Pendiente | Pendiente | Pendiente |
 | 6 | Pendiente | Pendiente | 0 | 0 | Pendiente | Pendiente | Pendiente | Pendiente |
 | 7 | Pendiente | Pendiente | 0 | 0 | Pendiente | Pendiente | Pendiente | Pendiente |
+
+## Preflight 2026-05-10
+
+Resultado: no ejecutado.
+
+- `C:\Finanzas` no expuso un `finanza_test.mmb` operativo durante la busqueda.
+- El unico `staging.db` localizado fue el del repo:
+  `C:\Users\sqsri\Desktop\Ricardo\una app para mis cuentas\staging.db`.
+- Ese `staging.db` contiene `canonical_tx=0`, `reconcile_log=0` y
+  `job_runs=0`, por lo que no hay lote real para medir.
+- Los `.mmb` encontrados durante busquedas previas pertenecen a carpetas
+  temporales `.pytest-*`; no califican como evidencia operacional.
+
+Comando objetivo cuando existan insumos reales:
+
+```powershell
+finanzasmmex run --writer sql `
+  --db "C:\Finanzas\staging.db" `
+  --mmex-db "C:\Finanzas\finanza_test.mmb" `
+  --backup-dir "C:\Finanzas\backups" `
+  --allow-shadow-write
+```
+
+El mismo lote debe correrse una segunda vez para documentar idempotencia.
 
 ## Criterio de cierre
 
