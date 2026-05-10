@@ -7,7 +7,7 @@ Python será el motor financiero: ingesta, ETL, staging SQLite, deduplicación, 
 
 ## Arquitectura E Interfaces
 - Estructura principal: `src/finanzasmmex` para Python, `desktop/FinanzasMMEX.App` para WPF, `contracts/` para esquemas JSON compartidos y `tests/` para motor + contratos.
-- CLI Python estable: `finanzasmmex init`, `run --source gmail|mp|scraping-be|scraping-cmr|drop|manual|all --writer ofx|sql`, `login --source gmail|mp|be|cmr`, `review list|update|resolve`, `quickadd create`, `replay --since YYYY-MM-DD`.
+- CLI Python estable para Fase 2: `finanzasmmex init`, `run --source gmail|mp|scraping-be|scraping-cmr|drop|manual|all --writer ofx|sql`, `login --source mp`, `review list|update|resolve`, `quickadd create`, `category-rules list|add|update|delete`. `replay --since YYYY-MM-DD` queda diferido hasta que exista la restauracion operativa completa de backups/reportes; no es requisito de cierre de Fase 2.
 - Contrato JSON C# ↔ Python: cada comando devuelve `{ ok, data, errors, warnings, run_id }`; errores con `code`, `message`, `details`; exit codes claros para éxito, validación, credenciales, lock MMEX y fallo temporal.
 - Modelo central: `CanonicalTx` inmutable en Python; DTOs equivalentes en C# solo para UI. La fuente de verdad sigue siendo `staging.db`.
 - C# WPF: ventana de revisión, edición de categoría/payee/tags, quick-add manual, estado resumido del último job y apertura de reportes HTML locales.
@@ -25,7 +25,7 @@ Python será el motor financiero: ingesta, ETL, staging SQLite, deduplicación, 
 - Python unitario: parsers, `parse_clp_amount`, FITID estable, fuzzy, transferencias internas, vault mock, reconciliación, writer rollback/idempotencia.
 - C# unitario: parseo de respuestas JSON, estados de error, validaciones quick-add, edición de pendientes y manejo de timeouts del subproceso.
 - Integración híbrida: WPF invoca CLI Python en ambiente de prueba; crea quick-add; lista pendientes; resuelve una transacción; verifica cambios en `staging.db`.
-- E2E financiero: correr mismo lote dos veces sin duplicados; MMEX bloqueado difiere escritura; lote descuadrado no inserta; backup + replay restauran.
+- E2E financiero: correr mismo lote dos veces sin duplicados; MMEX bloqueado difiere escritura; lote descuadrado no inserta; backup restaura conteos/balances. `replay --since` queda diferido fuera del cierre de Fase 2.
 - Smoke real: Gmail 24h, Gmail 30 días BancoEstado con extracción >= 95%, MP 30 días, OFX sin duplicados, OAuth revocado con error claro, Ollama apagado manda a revisión.
 - Seguridad: sin secretos en repo/logs; storage protegido; tráfico limitado a Gmail API, Mercado Pago API y portales bancarios durante scraping.
 

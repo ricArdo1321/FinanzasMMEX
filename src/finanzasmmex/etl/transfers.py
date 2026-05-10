@@ -2,7 +2,6 @@ from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Iterable
-from uuid import uuid4
 
 from ..models import CanonicalTx
 
@@ -15,8 +14,8 @@ def link_internal_transfers(txs: Iterable[CanonicalTx]) -> list[CanonicalTx]:
     items = list(txs)
     by_uid: dict[str, CanonicalTx] = {tx.tx_uid: tx for tx in items}
 
-    paired: dict[str, str] = {}          # tx_uid → pair_uid
-    to_alias: dict[str, str] = {}        # tx_uid → counterpart account_alias
+    paired: dict[str, str] = {}  # tx_uid -> pair_uid
+    to_alias: dict[str, str] = {}  # tx_uid -> counterpart account_alias
     consumed: set[str] = set()
 
     for i, tx_a in enumerate(items):

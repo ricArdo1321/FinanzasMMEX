@@ -1,10 +1,14 @@
 import argparse
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -17,9 +21,20 @@ from finanzasmmex.adapters.mp_api import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture
+def safe_backup_dir() -> Iterator[Path]:
+    path = Path(tempfile.gettempdir()) / f"finanzasmmex-test-backups-{uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=False)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def run_cli(
     *args: str,
     env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
     return subprocess.run(
@@ -28,6 +43,7 @@ def run_cli(
         capture_output=True,
         text=True,
         env=merged_env,
+        input=input_text or "",
     )
 
 
@@ -122,6 +138,16 @@ def test_subcommand_help_returns_json_envelope() -> None:
     assert result.returncode == 0
     assert payload["ok"] is True
     assert "--source" in payload["data"]["help"]
+    assert payload["errors"] == []
+
+
+def test_nested_subcommand_help_returns_json_envelope() -> None:
+    result = run_cli("review", "list", "--help")
+
+    payload = parse_stdout(result)
+    assert result.returncode == 0
+    assert payload["ok"] is True
+    assert "--needs-review-only" in payload["data"]["help"]
     assert payload["errors"] == []
 
 
@@ -266,8 +292,9 @@ def test_run_mp_online_credentials_error_maps_exit_3(
     def raise_credentials(**kwargs) -> None:
         raise MercadoPagoCredentialsError("mp_credentials_invalid:http_401")
 
-    monkeypatch.setenv("MP_ACCESS_TOKEN", "TEST-TOKEN")
-    monkeypatch.setenv("FINANZASMMEX_DISABLE_VAULT", "1")
+    monkeypatch.delenv("MP_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("FINANZASMMEX_DISABLE_VAULT", raising=False)
+    monkeypatch.setattr(cli, "_read_vault_secret", lambda key: "TEST-TOKEN")
     monkeypatch.setattr(cli, "run_mp_online", raise_credentials)
 
     with pytest.raises(SystemExit) as exc:
@@ -288,8 +315,9 @@ def test_run_mp_online_temporary_error_maps_exit_5(
     def raise_temporary(**kwargs) -> None:
         raise MercadoPagoTemporaryError("mp_server_error:http_503")
 
-    monkeypatch.setenv("MP_ACCESS_TOKEN", "TEST-TOKEN")
-    monkeypatch.setenv("FINANZASMMEX_DISABLE_VAULT", "1")
+    monkeypatch.delenv("MP_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("FINANZASMMEX_DISABLE_VAULT", raising=False)
+    monkeypatch.setattr(cli, "_read_vault_secret", lambda key: "TEST-TOKEN")
     monkeypatch.setattr(cli, "run_mp_online", raise_temporary)
 
     with pytest.raises(SystemExit) as exc:
@@ -302,7 +330,28 @@ def test_run_mp_online_temporary_error_maps_exit_5(
     assert "TEST-TOKEN" not in json.dumps(payload)
 
 
-def test_login_mp_requires_token_env_var() -> None:
+def test_run_mp_ignores_env_token_without_vault_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    def fail_if_called(**kwargs) -> None:
+        raise AssertionError("run_mp_online must not receive env tokens")
+
+    monkeypatch.setenv("MP_ACCESS_TOKEN", "TEST-TOKEN")
+    monkeypatch.delenv("FINANZASMMEX_DISABLE_VAULT", raising=False)
+    monkeypatch.setattr(cli, "_read_vault_secret", lambda key: None)
+    monkeypatch.setattr(cli, "run_mp_online", fail_if_called)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._run_mp(_mp_online_args(tmp_path))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exc.value.code == 3
+    assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
+
+
+def test_login_mp_requires_token_from_stdin() -> None:
     result = run_cli(
         "login",
         "--source",
@@ -313,20 +362,22 @@ def test_login_mp_requires_token_env_var() -> None:
     payload = parse_stdout(result)
     assert result.returncode == 3
     assert payload["errors"][0]["code"] == "CREDENTIALS_REQUIRED"
-    assert payload["errors"][0]["details"]["expected_env"] == "MP_ACCESS_TOKEN"
+    assert payload["errors"][0]["details"]["input"] == "stdin_or_secure_prompt"
 
 
-def test_login_mp_does_not_echo_token_value_on_failure() -> None:
+def test_login_mp_accepts_token_from_stdin_without_echoing_it() -> None:
     sentinel = "SENTINEL-TOKEN-DO-NOT-LEAK-9b3c1e"
     result = run_cli(
         "login",
         "--source",
         "mp",
-        env={"MP_ACCESS_TOKEN": sentinel, "FINANZASMMEX_DISABLE_VAULT": "1"},
+        env={"MP_ACCESS_TOKEN": "", "FINANZASMMEX_DISABLE_VAULT": "1"},
+        input_text=f"{sentinel}\n",
     )
 
-    # Disabled vault means set_secret still runs; we cannot guarantee storage
-    # without keyring, but we can guarantee the envelope never echoes the token.
+    payload = parse_stdout(result)
+    assert result.returncode == 0
+    assert payload["ok"] is True
     assert sentinel not in result.stdout
     assert sentinel not in result.stderr
 
@@ -356,10 +407,22 @@ def test_init_missing_schema_returns_validation_error(tmp_path) -> None:
     assert payload["warnings"] == []
 
 
-def test_run_sql_success_returns_sql_metrics_and_updates_staging(tmp_path) -> None:
+def test_review_missing_db_returns_validation_error(tmp_path) -> None:
+    result = run_cli("review", "list", "--db", str(tmp_path / "missing.db"))
+
+    payload = parse_stdout(result)
+    assert result.returncode == 2
+    assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
+    assert payload["errors"][0]["details"]["field"] == "--db"
+
+
+def test_run_sql_success_returns_sql_metrics_and_updates_staging(
+    tmp_path,
+    safe_backup_dir: Path,
+) -> None:
     db = tmp_path / "staging.db"
     mmex = tmp_path / "finanza_test.mmb"
-    backups = tmp_path / "backups"
+    backups = safe_backup_dir
     create_mmex_db(mmex)
 
     init = run_cli(
@@ -419,6 +482,87 @@ def test_run_sql_success_returns_sql_metrics_and_updates_staging(tmp_path) -> No
     )
     assert listed["data"]["count"] == 1
     assert listed["data"]["items"][0]["mmex_status"] == "inserted"
+
+
+def test_run_sql_second_run_keeps_mmex_and_staging_state_unchanged(
+    tmp_path,
+    safe_backup_dir: Path,
+) -> None:
+    db = tmp_path / "staging.db"
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = safe_backup_dir
+    create_mmex_db(mmex)
+
+    assert run_cli(
+        "init",
+        "--db",
+        str(db),
+        "--schema",
+        str(ROOT / "src" / "finanzasmmex" / "staging" / "schema.sql"),
+    ).returncode == 0
+    assert run_cli(
+        "quickadd",
+        "create",
+        "--db",
+        str(db),
+        "--owner",
+        "ricardo",
+        "--account-alias",
+        "BE_Ricardo_1234",
+        "--amount",
+        "12340",
+        "--direction",
+        "debit",
+        "--date",
+        "2026-05-02",
+        "--merchant-raw",
+        "COMERCIO DEMO",
+    ).returncode == 0
+
+    first = run_cli(
+        "run",
+        "--writer",
+        "sql",
+        "--db",
+        str(db),
+        "--mmex-db",
+        str(mmex),
+        "--backup-dir",
+        str(backups),
+        "--allow-shadow-write",
+    )
+    second = run_cli(
+        "run",
+        "--writer",
+        "sql",
+        "--db",
+        str(db),
+        "--mmex-db",
+        str(mmex),
+        "--backup-dir",
+        str(backups),
+        "--allow-shadow-write",
+    )
+
+    assert first.returncode == 0, first.stdout
+    assert second.returncode == 0, second.stdout
+    second_payload = parse_stdout(second)
+    assert second_payload["data"]["items_inserted"] == 0
+    with sqlite3.connect(mmex) as conn:
+        tx_count = conn.execute("SELECT COUNT(*) FROM CHECKINGACCOUNT_V1").fetchone()[0]
+        hash_count = conn.execute(
+            "SELECT COUNT(*) FROM CUSTOMFIELDDATA_V1"
+        ).fetchone()[0]
+    inserted = parse_stdout(
+        run_cli("review", "list", "--db", str(db), "--status", "inserted")
+    )
+    pending = parse_stdout(
+        run_cli("review", "list", "--db", str(db), "--status", "pending")
+    )
+    assert tx_count == 1
+    assert hash_count == 1
+    assert inserted["data"]["count"] == 1
+    assert pending["data"]["count"] == 0
 
 
 def test_run_sql_requires_shadow_write_flag(tmp_path) -> None:
@@ -501,3 +645,9 @@ def test_run_sql_locked_db_returns_exit_4(tmp_path) -> None:
     assert result.returncode == 4
     assert payload["ok"] is False
     assert payload["errors"][0]["code"] == "MMEX_LOCKED"
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT status, error_message FROM job_runs WHERE job_name = ?",
+            ("mmex_sql",),
+        ).fetchone()
+    assert row == ("deferred", "MMEX database is locked")

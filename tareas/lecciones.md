@@ -11,3 +11,6 @@
   evidencia revisable.
 - No normalizar montos negativos con valor absoluto. Rechazar o modelar
   explicitamente reversas/devoluciones, con pruebas de semantica financiera.
+- Si el usuario rechaza canales o proveedores concretos para una funcion,
+  eliminarlos del producto y dejar el flujo local/minimo antes de seguir con
+  integraciones externas.

@@ -4,53 +4,131 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d"
-             d:DesignHeight="400" d:DesignWidth="800">
+             d:DesignHeight="560" d:DesignWidth="1080">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <StackPanel Orientation="Horizontal" Margin="8" Grid.Row="0">
+
+        <WrapPanel Grid.Row="0" Margin="8" VerticalAlignment="Top">
             <Label Content="Owner" />
-            <TextBox Width="100" Margin="4,0"
+            <TextBox Width="95" Margin="4,0,8,4"
                      Text="{Binding OwnerFilter, UpdateSourceTrigger=PropertyChanged}" />
             <Label Content="Cuenta" />
-            <TextBox Width="160" Margin="4,0"
+            <TextBox Width="135" Margin="4,0,8,4"
                      Text="{Binding AccountFilter, UpdateSourceTrigger=PropertyChanged}" />
             <Label Content="Estado" />
-            <ComboBox Width="120" Margin="4,0" SelectedValue="{Binding StatusFilter}"
+            <ComboBox Width="110" Margin="4,0,8,4"
+                      SelectedValue="{Binding StatusFilter, UpdateSourceTrigger=PropertyChanged}"
                       SelectedValuePath="Content">
                 <ComboBoxItem Content="pending" />
                 <ComboBoxItem Content="exported" />
                 <ComboBoxItem Content="inserted" />
                 <ComboBoxItem Content="rejected" />
             </ComboBox>
-            <CheckBox Margin="8,4" VerticalAlignment="Center"
+            <Label Content="Desde" />
+            <TextBox Width="95" Margin="4,0,8,4"
+                     Text="{Binding SinceFilter, UpdateSourceTrigger=PropertyChanged}" />
+            <Label Content="Hasta" />
+            <TextBox Width="95" Margin="4,0,8,4"
+                     Text="{Binding UntilFilter, UpdateSourceTrigger=PropertyChanged}" />
+            <Label Content="Limite" />
+            <TextBox Width="60" Margin="4,0,8,4"
+                     Text="{Binding LimitFilter, UpdateSourceTrigger=PropertyChanged}" />
+            <Label Content="Fuente" />
+            <TextBox Width="90" Margin="4,0,8,4"
+                     Text="{Binding SourceFilter, UpdateSourceTrigger=PropertyChanged}" />
+            <Label Content="Categoria" />
+            <TextBox Width="115" Margin="4,0,8,4"
+                     Text="{Binding CategoryFilter, UpdateSourceTrigger=PropertyChanged}" />
+            <Label Content="Comercio" />
+            <TextBox Width="130" Margin="4,0,8,4"
+                     Text="{Binding MerchantFilter, UpdateSourceTrigger=PropertyChanged}" />
+            <CheckBox Margin="4,4,8,4" VerticalAlignment="Center"
                       Content="Solo needs_review"
                       IsChecked="{Binding NeedsReviewOnly}" />
-            <Button Content="Refrescar" Margin="8,0" Padding="12,4"
+            <Button Content="Refrescar" Margin="4,0,8,4" Padding="12,4"
                     Command="{Binding RefreshCommand}" />
-        </StackPanel>
+        </WrapPanel>
 
         <DataGrid Grid.Row="1" Margin="8,0"
                   AutoGenerateColumns="False"
                   ItemsSource="{Binding Items}"
+                  SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
                   IsReadOnly="True"
-                  CanUserAddRows="False">
+                  CanUserAddRows="False"
+                  SelectionMode="Single">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Fecha" Binding="{Binding PostedDate}" />
                 <DataGridTextColumn Header="Owner" Binding="{Binding Owner}" />
+                <DataGridTextColumn Header="Fuente" Binding="{Binding SourceType}" />
                 <DataGridTextColumn Header="Cuenta" Binding="{Binding AccountAlias}" />
                 <DataGridTextColumn Header="Comercio" Binding="{Binding MerchantNorm}" />
                 <DataGridTextColumn Header="Monto" Binding="{Binding Amount}" />
                 <DataGridTextColumn Header="Dir." Binding="{Binding Direction}" />
-                <DataGridTextColumn Header="Categoría" Binding="{Binding CategoryGuess}" />
+                <DataGridTextColumn Header="Categoria" Binding="{Binding CategoryGuess}" />
+                <DataGridTextColumn Header="Subcategoria" Binding="{Binding SubcategoryGuess}" />
                 <DataGridCheckBoxColumn Header="Review" Binding="{Binding NeedsReview}" />
+                <DataGridTextColumn Header="Motivo" Binding="{Binding ReviewReason}" />
                 <DataGridTextColumn Header="Status" Binding="{Binding MmexStatus}" />
             </DataGrid.Columns>
         </DataGrid>
 
-        <TextBlock Grid.Row="2" Margin="8,4" Text="{Binding StatusMessage}" />
+        <Grid Grid.Row="2" Margin="8,8,8,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <WrapPanel Grid.Column="0">
+                <Label Content="Comercio" />
+                <TextBox Width="145" Margin="4,0,8,4"
+                         Text="{Binding EditMerchantNorm, UpdateSourceTrigger=PropertyChanged}" />
+                <Label Content="Categoria" />
+                <TextBox Width="125" Margin="4,0,8,4"
+                         Text="{Binding EditCategoryGuess, UpdateSourceTrigger=PropertyChanged}" />
+                <Label Content="Subcategoria" />
+                <TextBox Width="125" Margin="4,0,8,4"
+                         Text="{Binding EditSubcategoryGuess, UpdateSourceTrigger=PropertyChanged}" />
+                <Label Content="Tags" />
+                <TextBox Width="145" Margin="4,0,8,4"
+                         Text="{Binding EditTags, UpdateSourceTrigger=PropertyChanged}" />
+                <CheckBox Margin="4,4,8,4" VerticalAlignment="Center"
+                          Content="Needs review"
+                          IsChecked="{Binding EditNeedsReview}" />
+                <Label Content="Motivo" />
+                <TextBox Width="160" Margin="4,0,8,4"
+                         Text="{Binding EditReviewReason, UpdateSourceTrigger=PropertyChanged}" />
+                <Button Content="Guardar seleccion" Margin="4,0,8,4" Padding="12,4"
+                        Command="{Binding SaveSelectedCommand}" />
+            </WrapPanel>
+
+            <Separator Grid.Column="1" Margin="8,0" Width="1" />
+
+            <WrapPanel Grid.Column="2">
+                <Button Content="Limpiar review visibles" Margin="4,0,8,4" Padding="12,4"
+                        Command="{Binding BulkClearReviewVisibleCommand}" />
+                <Label Content="Resolver como" />
+                <ComboBox Width="110" Margin="4,0,8,4"
+                          SelectedValue="{Binding BulkResolveStatus, UpdateSourceTrigger=PropertyChanged}"
+                          SelectedValuePath="Content">
+                    <ComboBoxItem Content="exported" />
+                    <ComboBoxItem Content="inserted" />
+                    <ComboBoxItem Content="rejected" />
+                </ComboBox>
+                <Button Content="Resolver visibles" Margin="4,0,8,4" Padding="12,4"
+                        Command="{Binding BulkResolveVisibleCommand}" />
+                <TextBox Width="170" Margin="4,0,8,4"
+                         Text="{Binding ReportsDir, UpdateSourceTrigger=PropertyChanged}" />
+                <Button Content="Abrir ultimo reporte" Margin="4,0,8,4" Padding="12,4"
+                        Command="{Binding OpenLatestReportCommand}" />
+            </WrapPanel>
+        </Grid>
+
+        <TextBlock Grid.Row="3" Margin="8,4" Text="{Binding StatusMessage}" />
     </Grid>
 </UserControl>

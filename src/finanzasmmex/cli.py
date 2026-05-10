@@ -18,6 +18,7 @@ from .adapters.scraping_base import ScrapingError, ScrapingLoginError
 from .etl.fitid import ensure_fitid
 from .etl.normalize import parse_clp_amount
 from .models import CanonicalTx
+from .notifications import notify_needs_review
 from .orchestrator.jobs import (
     RunSummary,
     run_gmail_all_to_ofx,
@@ -29,6 +30,11 @@ from .orchestrator.jobs import (
     run_pending_to_sql,
     run_scraping_be,
     run_scraping_cmr,
+)
+from .reports import (
+    generate_monthly_dashboard,
+    latest_monthly_dashboard,
+    list_monthly_dashboards,
 )
 from .secrets.vault import Vault
 from .staging.repo import JobRunStatus, StagingRepo
@@ -46,8 +52,9 @@ MP_TOKEN_ENV = "MP_ACCESS_TOKEN"
 DISABLE_VAULT_ENV = "FINANZASMMEX_DISABLE_VAULT"
 DEFAULT_DATA_DIR = r"C:\Finanzas"
 DEFAULT_STAGING_DB = rf"{DEFAULT_DATA_DIR}\staging.db"
-DEFAULT_REPORT_OUTPUT = rf"{DEFAULT_DATA_DIR}\reports\review.html"
-DEFAULT_OFX_OUTPUT = rf"{DEFAULT_DATA_DIR}\reports\finanzasmmex.ofx"
+DEFAULT_REPORTS_DIR = rf"{DEFAULT_DATA_DIR}\reports"
+DEFAULT_REPORT_OUTPUT = rf"{DEFAULT_REPORTS_DIR}\review.html"
+DEFAULT_OFX_OUTPUT = rf"{DEFAULT_REPORTS_DIR}\finanzasmmex.ofx"
 DEFAULT_BACKUP_DIR = rf"{DEFAULT_DATA_DIR}\backups"
 DEFAULT_DROP_DIR = rf"{DEFAULT_DATA_DIR}\drop"
 
@@ -768,6 +775,9 @@ def _run_review_list(args: argparse.Namespace) -> NoReturn:
         needs_review_only=args.needs_review_only,
         since=args.since,
         until=args.until,
+        source_type=args.source_type,
+        category_guess=args.category,
+        merchant_query=args.merchant,
         limit=args.limit,
     )
     items = [_tx_to_dict(tx) for tx in txs]
@@ -783,6 +793,9 @@ def _run_review_list(args: argparse.Namespace) -> NoReturn:
                 "needs_review_only": args.needs_review_only,
                 "since": args.since,
                 "until": args.until,
+                "source_type": args.source_type,
+                "category": args.category,
+                "merchant": args.merchant,
                 "limit": args.limit,
             },
         },
@@ -887,6 +900,338 @@ def _run_review_resolve(args: argparse.Namespace) -> NoReturn:
             "mmex_status": args.status,
         },
     )
+
+
+def _run_review_bulk_update(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
+    repo = StagingRepo(args.db)
+    items = _load_bulk_items(args.input)
+    results: list[dict[str, object]] = []
+
+    for index, item in enumerate(items):
+        tx_uid = _bulk_tx_uid(item)
+        if tx_uid is None:
+            results.append(
+                _bulk_error(index, "tx_uid is required", {"field": "tx_uid"})
+            )
+            continue
+
+        field_result = _bulk_update_fields(item)
+        if "error" in field_result:
+            error = field_result["error"]
+            assert isinstance(error, dict)
+            results.append(_bulk_error(index, str(error["message"]), error, tx_uid))
+            continue
+
+        fields = field_result["fields"]
+        assert isinstance(fields, dict)
+        if repo.get_tx(tx_uid) is None:
+            results.append(
+                _bulk_error(
+                    index,
+                    "Transaction not found",
+                    {"tx_uid": tx_uid},
+                    tx_uid,
+                )
+            )
+            continue
+
+        repo.update_tx_fields(tx_uid, fields)
+        updated_tx = repo.get_tx(tx_uid)
+        if updated_tx is None:
+            results.append(
+                _bulk_error(
+                    index,
+                    "Transaction disappeared between update and read",
+                    {"tx_uid": tx_uid},
+                    tx_uid,
+                    code="TEMPORARY_FAILURE",
+                )
+            )
+            continue
+
+        public_fields = sorted(
+            ("tags" if name == "tags_json" else name) for name in fields
+        )
+        results.append(
+            {
+                "index": index,
+                "tx_uid": tx_uid,
+                "ok": True,
+                "updated_fields": public_fields,
+                "tx": _tx_to_dict(updated_tx),
+            }
+        )
+
+    _emit_bulk_result("bulk-update", results)
+
+
+def _run_review_bulk_resolve(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
+    repo = StagingRepo(args.db)
+    items = _load_bulk_items(args.input)
+    results: list[dict[str, object]] = []
+
+    for index, item in enumerate(items):
+        tx_uid = _bulk_tx_uid(item)
+        if tx_uid is None:
+            results.append(
+                _bulk_error(index, "tx_uid is required", {"field": "tx_uid"})
+            )
+            continue
+        status = item.get("status")
+        if status not in RESOLVE_STATUSES:
+            results.append(
+                _bulk_error(
+                    index,
+                    "status must be one of exported|inserted|rejected",
+                    {"field": "status", "value": status},
+                    tx_uid,
+                )
+            )
+            continue
+        if repo.get_tx(tx_uid) is None:
+            results.append(
+                _bulk_error(
+                    index,
+                    "Transaction not found",
+                    {"tx_uid": tx_uid},
+                    tx_uid,
+                )
+            )
+            continue
+
+        repo.update_mmex_status(tx_uid, str(status))
+        tx = repo.get_tx(tx_uid)
+        results.append(
+            {
+                "index": index,
+                "tx_uid": tx_uid,
+                "ok": True,
+                "updated_fields": ["mmex_status"],
+                "tx": _tx_to_dict(tx) if tx else None,
+            }
+        )
+
+    _emit_bulk_result("bulk-resolve", results)
+
+
+def _load_bulk_items(input_path: str) -> list[dict[str, object]]:
+    path = Path(input_path)
+    if not path.is_file():
+        _validation_error("Bulk input file does not exist", {"input": input_path})
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        _validation_error(
+            "Bulk input file must contain valid JSON",
+            {"input": input_path, "exception_type": type(exc).__name__},
+        )
+    if not isinstance(raw, list):
+        _validation_error("Bulk input must be a JSON array", {"input": input_path})
+    if not raw:
+        _validation_error(
+            "Bulk input must contain at least one item",
+            {"input": input_path},
+        )
+
+    items: list[dict[str, object]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            _validation_error(
+                "Bulk input items must be JSON objects",
+                {"input": input_path, "index": index},
+            )
+        items.append(cast(dict[str, object], item))
+    return items
+
+
+def _bulk_tx_uid(item: dict[str, object]) -> str | None:
+    tx_uid = item.get("tx_uid")
+    if not isinstance(tx_uid, str) or not tx_uid.strip():
+        return None
+    return tx_uid.strip()
+
+
+def _bulk_update_fields(item: dict[str, object]) -> dict[str, object]:
+    allowed = {
+        "tx_uid",
+        "owner",
+        "category_guess",
+        "subcategory_guess",
+        "merchant_norm",
+        "tags",
+        "needs_review",
+        "review_reason",
+    }
+    unknown = sorted(set(item) - allowed)
+    if unknown:
+        return {
+            "error": {
+                "message": "Unsupported bulk update fields",
+                "unknown": unknown,
+            }
+        }
+
+    fields: dict[str, object] = {}
+    if "owner" in item:
+        owner = item["owner"]
+        if owner not in VALID_OWNERS:
+            return {"error": {"message": "owner must be one of ricardo|laura|joint"}}
+        fields["owner"] = owner
+    for name in (
+        "category_guess",
+        "subcategory_guess",
+        "merchant_norm",
+        "review_reason",
+    ):
+        if name in item:
+            value = item[name]
+            if value is not None and not isinstance(value, str):
+                return {"error": {"message": f"{name} must be string or null"}}
+            fields[name] = value
+    if "tags" in item:
+        tags = _bulk_tags(item["tags"])
+        if tags is None:
+            return {"error": {"message": "tags must be string or array of strings"}}
+        fields["tags_json"] = json.dumps(tags)
+    if "needs_review" in item:
+        needs_review = _bulk_bool(item["needs_review"])
+        if needs_review is None:
+            return {"error": {"message": "needs_review must be boolean"}}
+        fields["needs_review"] = 1 if needs_review else 0
+    if not fields:
+        return {"error": {"message": "At least one updatable field must be provided"}}
+    return {"fields": fields}
+
+
+def _bulk_tags(value: object) -> list[str] | None:
+    if isinstance(value, str):
+        return _parse_tags(value)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return [tag.strip() for tag in value if tag.strip()]
+    return None
+
+
+def _bulk_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _bulk_error(
+    index: int,
+    message: str,
+    details: dict[str, object],
+    tx_uid: str | None = None,
+    *,
+    code: str = "VALIDATION_ERROR",
+) -> dict[str, object]:
+    return {
+        "index": index,
+        "tx_uid": tx_uid,
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": {"index": index, **details},
+        },
+    }
+
+
+def _emit_bulk_result(action: str, results: list[dict[str, object]]) -> NoReturn:
+    errors = [result for result in results if result.get("ok") is False]
+    data = {
+        "action": action,
+        "items_total": len(results),
+        "items_ok": len(results) - len(errors),
+        "items_error": len(errors),
+        "results": results,
+    }
+    if errors:
+        _emit(
+            False,
+            data=data,
+            errors=[
+                {
+                    "code": "BULK_PARTIAL_FAILURE",
+                    "message": "One or more bulk review items failed",
+                    "details": {
+                        "action": action,
+                        "items_error": len(errors),
+                    },
+                }
+            ],
+            exit_code=2,
+        )
+    _emit(True, data=data)
+
+
+def _run_reports_monthly(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
+    data = generate_monthly_dashboard(
+        StagingRepo(args.db),
+        month=args.month,
+        reports_dir=args.reports_dir,
+        output_path=args.output,
+    )
+    _emit(
+        True,
+        data={
+            "message": "Monthly dashboard generated",
+            **data,
+        },
+    )
+
+
+def _run_reports_list(args: argparse.Namespace) -> NoReturn:
+    data = list_monthly_dashboards(args.reports_dir)
+    _emit(True, data=data)
+
+
+def _run_reports_latest(args: argparse.Namespace) -> NoReturn:
+    data = latest_monthly_dashboard(args.reports_dir)
+    _emit(True, data=data)
+
+
+def _run_notify_needs_review(args: argparse.Namespace) -> NoReturn:
+    _validate_staging_db(args.db)
+    if args.limit < 1:
+        _validation_error("--limit must be greater than zero", {"field": "--limit"})
+    repo = StagingRepo(args.db)
+    txs = repo.list_txs(needs_review_only=True, limit=args.limit)
+    report_path = _resolve_notify_report_path(
+        report_path=args.report_path,
+        reports_dir=args.reports_dir,
+    )
+    result = notify_needs_review(txs, report_path=report_path)
+    _emit(
+        True,
+        data={
+            "message": (
+                "No needs_review transactions found"
+                if result.needs_review_count == 0
+                else "Needs-review notification prepared"
+            ),
+            **result.as_dict(),
+        },
+    )
+
+
+def _resolve_notify_report_path(
+    *,
+    report_path: str | None,
+    reports_dir: str,
+) -> str | None:
+    if report_path is not None:
+        path = Path(report_path).expanduser().resolve(strict=False)
+        return str(path) if path.is_file() else None
+    latest = latest_monthly_dashboard(reports_dir)
+    report = latest["report"]
+    if isinstance(report, dict):
+        resolved = report.get("report_path")
+        return str(resolved) if resolved else None
+    return None
 
 
 def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
@@ -1297,6 +1642,17 @@ def main() -> None:
         "--until", help="ISO date YYYY-MM-DD upper bound (inclusive)"
     )
     review_list_parser.add_argument(
+        "--source-type", default=None, help="Filter by source type"
+    )
+    review_list_parser.add_argument(
+        "--category", default=None, help="Filter by category_guess"
+    )
+    review_list_parser.add_argument(
+        "--merchant",
+        default=None,
+        help="Filter by merchant_norm or merchant_raw substring",
+    )
+    review_list_parser.add_argument(
         "--limit", type=int, default=200, help="Max rows to return (default 200)"
     )
 
@@ -1325,6 +1681,113 @@ def main() -> None:
         required=True,
         choices=sorted(RESOLVE_STATUSES),
         help="Target mmex_status",
+    )
+
+    review_bulk_update_parser = review_sub.add_parser(
+        "bulk-update", help="Update reviewable fields for a JSON batch"
+    )
+    review_bulk_update_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    review_bulk_update_parser.add_argument(
+        "--input",
+        required=True,
+        help="JSON file with an array of update items",
+    )
+
+    review_bulk_resolve_parser = review_sub.add_parser(
+        "bulk-resolve", help="Resolve mmex_status for a JSON batch"
+    )
+    review_bulk_resolve_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    review_bulk_resolve_parser.add_argument(
+        "--input",
+        required=True,
+        help="JSON file with an array of resolve items",
+    )
+
+    # reports command (monthly/list/latest)
+    reports_parser = subparsers.add_parser(
+        "reports",
+        help="Generate and list local HTML dashboards",
+    )
+    reports_sub = reports_parser.add_subparsers(
+        dest="reports_action",
+        required=True,
+        parser_class=ContractArgumentParser,
+    )
+
+    reports_monthly_parser = reports_sub.add_parser(
+        "monthly", help="Generate dashboard_YYYY-MM.html from staging"
+    )
+    reports_monthly_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    reports_monthly_parser.add_argument(
+        "--month",
+        required=True,
+        help="Month to report in YYYY-MM format",
+    )
+    reports_monthly_parser.add_argument(
+        "--reports-dir",
+        default=DEFAULT_REPORTS_DIR,
+        help="Directory for local HTML dashboards",
+    )
+    reports_monthly_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional HTML filename/path under --reports-dir",
+    )
+
+    reports_list_parser = reports_sub.add_parser(
+        "list", help="List generated monthly dashboards"
+    )
+    reports_list_parser.add_argument(
+        "--reports-dir",
+        default=DEFAULT_REPORTS_DIR,
+        help="Directory for local HTML dashboards",
+    )
+
+    reports_latest_parser = reports_sub.add_parser(
+        "latest", help="Return the newest generated monthly dashboard"
+    )
+    reports_latest_parser.add_argument(
+        "--reports-dir",
+        default=DEFAULT_REPORTS_DIR,
+        help="Directory for local HTML dashboards",
+    )
+
+    # notify command (needs-review)
+    notify_parser = subparsers.add_parser(
+        "notify",
+        help="Send optional local notifications",
+    )
+    notify_sub = notify_parser.add_subparsers(
+        dest="notify_action",
+        required=True,
+        parser_class=ContractArgumentParser,
+    )
+
+    notify_needs_review_parser = notify_sub.add_parser(
+        "needs-review",
+        help="Notify when staging has needs_review transactions",
+    )
+    notify_needs_review_parser.add_argument("--db", default=DEFAULT_STAGING_DB)
+    notify_needs_review_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compatibility flag; this command is always local-only",
+    )
+    notify_needs_review_parser.add_argument(
+        "--reports-dir",
+        default=DEFAULT_REPORTS_DIR,
+        help="Directory used to discover latest monthly dashboard",
+    )
+    notify_needs_review_parser.add_argument(
+        "--report-path",
+        default=None,
+        help="Optional existing HTML report path to include in payload",
+    )
+    notify_needs_review_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10_000,
+        help="Maximum needs_review rows to summarize",
     )
 
     # quickadd command (create)
@@ -1446,6 +1909,14 @@ def main() -> None:
         ("review", "list"): review_list_parser,
         ("review", "update"): review_update_parser,
         ("review", "resolve"): review_resolve_parser,
+        ("review", "bulk-update"): review_bulk_update_parser,
+        ("review", "bulk-resolve"): review_bulk_resolve_parser,
+        ("reports",): reports_parser,
+        ("reports", "monthly"): reports_monthly_parser,
+        ("reports", "list"): reports_list_parser,
+        ("reports", "latest"): reports_latest_parser,
+        ("notify",): notify_parser,
+        ("notify", "needs-review"): notify_needs_review_parser,
         ("quickadd",): quickadd_parser,
         ("quickadd", "create"): quickadd_create_parser,
         ("category-rules",): rules_parser,
@@ -1543,6 +2014,20 @@ def main() -> None:
                 _run_review_update(args)
             elif args.review_action == "resolve":
                 _run_review_resolve(args)
+            elif args.review_action == "bulk-update":
+                _run_review_bulk_update(args)
+            elif args.review_action == "bulk-resolve":
+                _run_review_bulk_resolve(args)
+        elif args.command == "reports":
+            if args.reports_action == "monthly":
+                _run_reports_monthly(args)
+            elif args.reports_action == "list":
+                _run_reports_list(args)
+            elif args.reports_action == "latest":
+                _run_reports_latest(args)
+        elif args.command == "notify":
+            if args.notify_action == "needs-review":
+                _run_notify_needs_review(args)
         elif args.command == "quickadd":
             if args.quickadd_action == "create":
                 _run_quickadd_create(args)

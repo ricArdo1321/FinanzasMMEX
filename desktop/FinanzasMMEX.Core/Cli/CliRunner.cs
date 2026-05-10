@@ -121,8 +121,14 @@ public sealed class CliRunner : ICliRunner
                     process.Kill(entireProcessTree: true);
                     // Give the async readers a brief window to drain stderr,
                     // which usually carries the diagnostic for hung processes.
-                    process.WaitForExit(500);
+                    using var drainCts = new CancellationTokenSource(
+                        TimeSpan.FromMilliseconds(500));
+                    await process.WaitForExitAsync(drainCts.Token).ConfigureAwait(false);
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                // Drain timeout elapsed; keep returning the timeout diagnostic.
             }
             catch
             {

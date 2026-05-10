@@ -38,6 +38,10 @@ class MmexLockedError(MmexSqlError):
     pass
 
 
+class MmexBackupError(MmexSqlError):
+    pass
+
+
 class MmexSchemaError(MmexSqlError):
     pass
 
@@ -103,13 +107,15 @@ def write_sql(
             backup_post_path=None,
         )
 
-    if staging_repo is not None:
-        aliases = {tx.account_alias for tx in eligible}
-        if staging_repo.has_reconcile_off(aliases):
-            raise MmexSafetyError(
-                "Refusing to write: at least one account in the batch has "
-                "reconcile_log.status='off'"
-            )
+    if staging_repo is None:
+        raise MmexSafetyError("SQL writer requires staging_repo reconcile guard")
+    aliases = {tx.account_alias for tx in eligible}
+    aliases.update(tx.to_account_alias for tx in eligible if tx.to_account_alias)
+    if staging_repo.has_reconcile_off(aliases):
+        raise MmexSafetyError(
+            "Refusing to write: at least one account in the batch has "
+            "reconcile_log.status='off'"
+        )
 
     # Probe for MMEX-held lock FIRST so we surface MmexLockedError before
     # any file-system side effect (a hung MMEX should not also create a
@@ -127,6 +133,7 @@ def write_sql(
     rejected_unsupported_pairs = 0
 
     credit_skip, pair_to_credit_uid = _build_transfer_index(eligible)
+    tx_by_uid = {tx.tx_uid: tx for tx in eligible}
 
     conn = _connect(mmex_path)
     try:
@@ -158,22 +165,43 @@ def write_sql(
                 continue
 
             if tx.tx_type == "internal_transfer":
-                mmex_tx_id = _insert_transfer_tx(conn, tx)
-                # Map both legs to the same MMEX row in summary
                 pair_uid = tx.transfer_pair_uid
                 if pair_uid is None:
                     raise MmexMappingError(
                         "transfer_pair_uid is required for internal transfers"
                     )
                 credit_uid = pair_to_credit_uid[pair_uid]
+                credit_leg = tx_by_uid.get(credit_uid)
+                if credit_leg is None or not credit_leg.fitid_synthetic:
+                    raise MmexMappingError(
+                        "paired credit leg fitid_synthetic is required"
+                    )
+                if _sync_hash_exists(conn, sync_field_id, credit_leg.fitid_synthetic):
+                    duplicates += 1
+                    continue
+                mmex_tx_id = _insert_transfer_tx(conn, tx)
+                # Map both legs to the same MMEX row in summary.
                 inserted[tx.tx_uid] = mmex_tx_id
                 inserted[credit_uid] = mmex_tx_id
-                # Track debit account in summary (standard for transfers)
+
+                # Track accounts in summary:
+                # debit leg -> from account, credit leg -> to account.
                 account_id = _resolve_account_id(
                     conn, tx.account_alias, card_last4=tx.card_last4
                 )
+                if tx.to_account_alias is None:
+                    raise MmexMappingError(
+                        "to_account_alias is required for internal transfers"
+                    )
+                to_account_id = _resolve_account_id(conn, tx.to_account_alias)
                 inserted_accounts[tx.tx_uid] = account_id
-                inserted_accounts[credit_uid] = account_id
+                inserted_accounts[credit_uid] = to_account_id
+
+                # Store both sync hashes linked to the same MMEX tx
+                _insert_sync_hash(conn, sync_field_id, mmex_tx_id, tx.fitid_synthetic)
+                _insert_sync_hash(
+                    conn, sync_field_id, mmex_tx_id, credit_leg.fitid_synthetic
+                )
             else:
                 account_id = _resolve_account_id(
                     conn, tx.account_alias, card_last4=tx.card_last4
@@ -197,10 +225,10 @@ def write_sql(
                     category_id=category_id,
                     subcategory_id=subcategory_id,
                 )
+                _insert_sync_hash(conn, sync_field_id, mmex_tx_id, tx.fitid_synthetic)
                 inserted[tx.tx_uid] = mmex_tx_id
                 inserted_accounts[tx.tx_uid] = account_id
 
-            _insert_sync_hash(conn, sync_field_id, mmex_tx_id, tx.fitid_synthetic)
             _apply_tags(conn, tx.tags, mmex_tx_id)
 
         conn.commit()
@@ -220,8 +248,8 @@ def write_sql(
     post_backup_path: str | None
     try:
         post_backup_path = str(_safe_backup(mmex_path, backup_dir, "post"))
-    except OSError:
-        post_backup_path = None
+    except (OSError, sqlite3.Error) as exc:
+        raise MmexBackupError("post-write backup failed") from exc
 
     # Calculate actual items_inserted as the number of unique MMEX rows created
     unique_mmex_ids = set(inserted.values())
@@ -240,9 +268,6 @@ def write_sql(
     )
 
 
-_SHADOW_TOKENS = ("test", "shadow", "demo")
-
-
 def _safe_mmex_db_path(
     mmex_db_path: str | Path,
     allow_shadow_write: bool,
@@ -252,7 +277,6 @@ def _safe_mmex_db_path(
     # possible; we still defend against names crafted to look like shadow files.
     path = raw_path.resolve(strict=False)
     suffix = path.suffix.lower()
-    stem_lower = path.stem.lower()
     name_lower = path.name.lower()
 
     if suffix == ".emb":
@@ -260,9 +284,8 @@ def _safe_mmex_db_path(
     if suffix != ".mmb":
         raise MmexSafetyError("SQL writer target must be a .mmb database")
 
-    has_shadow_token = any(token in stem_lower for token in _SHADOW_TOKENS)
     looks_productive = name_lower == "finanza.mmb" or (
-        stem_lower.startswith("finanza") and not has_shadow_token
+        path.stem.lower().startswith("finanza") and name_lower != "finanza_test.mmb"
     )
     if looks_productive:
         raise MmexSafetyError(
@@ -270,8 +293,10 @@ def _safe_mmex_db_path(
         )
     if not allow_shadow_write:
         raise MmexSafetyError("SQL writer requires explicit shadow/test write flag")
-    if not has_shadow_token:
-        raise MmexSafetyError("SQL writer target must be a test/shadow .mmb path")
+    if name_lower != "finanza_test.mmb":
+        raise MmexSafetyError(
+            "SQL writer target must be named finanza_test.mmb in Phase 2"
+        )
     if not path.is_file():
         raise MmexSafetyError("SQL writer target .mmb does not exist")
     return path
@@ -297,7 +322,10 @@ def _build_transfer_index(
             continue
 
         # Stable key for the pair regardless of which leg we look at
-        pair_key = tuple(sorted([tx.tx_uid, tx.transfer_pair_uid]))
+        pair_key: tuple[str, str] = (
+            min(tx.tx_uid, tx.transfer_pair_uid),
+            max(tx.tx_uid, tx.transfer_pair_uid),
+        )
 
         if tx.direction == "debit" and tx.to_account_alias:
             debit_by_pair[pair_key] = tx
@@ -306,12 +334,12 @@ def _build_transfer_index(
 
     complete_keys = set(debit_by_pair) & set(credit_by_pair)
     credit_skip = {credit_by_pair[key].tx_uid for key in complete_keys}
-    
-    # Map debit's partner_tx_uid (which is the credit's tx_uid) 
-    # to the actual credit tx_uid. This is redundant but kept for clarity 
+
+    # Map debit's partner_tx_uid (which is the credit's tx_uid)
+    # to the actual credit tx_uid. This is redundant but kept for clarity
     # in the loop that uses tx.transfer_pair_uid.
     pair_to_credit_uid = {
-        debit_by_pair[key].transfer_pair_uid: credit_by_pair[key].tx_uid 
+        str(debit_by_pair[key].transfer_pair_uid): credit_by_pair[key].tx_uid
         for key in complete_keys
     }
     return credit_skip, pair_to_credit_uid
@@ -339,6 +367,7 @@ def _safe_backup_via_conn(
 ) -> Path:
     """Backup using an existing connection (used inside the writer transaction)."""
     out_dir = Path(backup_dir).expanduser().resolve(strict=False)
+    _assert_backup_dir_outside_repo(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     out_path = out_dir / f"{mmex_path.stem}.{stamp}.{kind}.mmb"
@@ -355,6 +384,32 @@ def _safe_backup_via_conn(
 
     _prune_old_backups(out_dir, mmex_path.stem)
     return out_path
+
+
+def _assert_backup_dir_outside_repo(out_dir: Path) -> None:
+    repo_root = _find_repo_root(Path.cwd())
+    if repo_root is None:
+        return
+    if _is_relative_to(out_dir, repo_root):
+        raise MmexSafetyError(
+            "SQL writer backup_dir must be outside the repository/worktree"
+        )
+
+
+def _find_repo_root(start: Path) -> Path | None:
+    current = start.resolve(strict=False)
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _prune_old_backups(backup_dir: Path, stem: str) -> None:
@@ -860,9 +915,10 @@ def _insert_transfer_tx(
     tx_date = tx.posted_date or tx.event_date or tx.booking_date
     if tx_date is None:
         raise MmexMappingError("Transaction date is required for SQL writer")
-    assert tx.to_account_alias, (
-        "to_account_alias must be set before calling _insert_transfer_tx"
-    )
+    if tx.to_account_alias is None:
+        raise MmexMappingError(
+            "to_account_alias must be set before calling _insert_transfer_tx"
+        )
     account_id = _resolve_account_id(conn, tx.account_alias, card_last4=tx.card_last4)
     to_account_id = _resolve_account_id(conn, tx.to_account_alias)
     amount_str = _amount_value(tx.amount)

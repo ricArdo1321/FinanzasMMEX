@@ -1,7 +1,7 @@
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from types import TracebackType
 from typing import Any, Iterable, Iterator, Literal, Mapping
@@ -16,6 +16,8 @@ PARSER_VERSION = "1.0"
 
 DEFAULT_BASE_URL = "https://api.mercadopago.com"
 DEFAULT_TIMEOUT = 15.0
+_CREDIT_OPERATION_TYPES = {"regular_payment", "pos_payment", "recurring_payment"}
+_DEBIT_OPERATION_TYPES = {"money_transfer", "account_money_transfer"}
 
 
 class MercadoPagoCredentialsError(RuntimeError):
@@ -34,6 +36,7 @@ def parse_payment(
     payload: Mapping[str, Any],
     *,
     source_file: str | None = None,
+    raw_text: str | None = None,
     owner: Literal["ricardo", "laura", "joint"] = "ricardo",
 ) -> CanonicalTx:
     if payload.get("status") != "approved":
@@ -55,7 +58,7 @@ def parse_payment(
         raise MercadoPagoParseError("Missing MP field: date_approved")
 
     try:
-        event_dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+        event_date = date.fromisoformat(raw_date[:10])
     except ValueError as exc:
         raise MercadoPagoParseError(
             f"Invalid MP date_approved: {raw_date!r}"
@@ -67,9 +70,13 @@ def parse_payment(
         description = "MERCADO PAGO"
         review_reasons.append("merchant_missing")
 
-    raw_text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    direction, tx_type, operation_review_reasons = _classify_operation(payload)
+    review_reasons.extend(operation_review_reasons)
+
+    if raw_text is None:
+        raw_text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        review_reasons.append("raw_text_synthesized")
     content_sha256 = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
-    event_date = event_dt.date()
     source_ref = _stringify(payload.get("external_reference") or payload.get("id"))
 
     return CanonicalTx(
@@ -83,11 +90,11 @@ def parse_payment(
         posted_date=event_date,
         amount=amount,
         currency="CLP",
-        direction="credit",
+        direction=direction,
         account_alias=f"MP_{_owner_label(owner)}",
         merchant_raw=description,
         merchant_norm=normalize_merchant(description),
-        tx_type="transfer_in",
+        tx_type=tx_type,
         parser_name=PARSER_NAME,
         parser_version=PARSER_VERSION,
         needs_review=bool(review_reasons),
@@ -219,6 +226,22 @@ def parse_payments(
     owner: Literal["ricardo", "laura", "joint"] = "ricardo",
 ) -> list[CanonicalTx]:
     return [parse_payment(p, source_file=source_file, owner=owner) for p in payloads]
+
+
+def _classify_operation(
+    payload: Mapping[str, Any],
+) -> tuple[
+    Literal["debit", "credit"],
+    Literal["transfer_in", "transfer_out"],
+    list[str],
+]:
+    operation_type = str(payload.get("operation_type") or "").strip()
+    if operation_type in _CREDIT_OPERATION_TYPES:
+        return "credit", "transfer_in", []
+    if operation_type in _DEBIT_OPERATION_TYPES:
+        return "debit", "transfer_out", []
+    label = operation_type or "missing"
+    return "credit", "transfer_in", [f"operation_type_unknown:{label}"]
 
 
 def _coerce_amount(value: Any) -> Decimal:

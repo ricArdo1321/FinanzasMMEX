@@ -23,6 +23,7 @@ wheels/
 # Testing
 .tox/
 .pytest_cache/
+.pytest-*/
 .coverage
 htmlcov/
 

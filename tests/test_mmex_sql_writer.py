@@ -1,4 +1,5 @@
 import sqlite3
+import tempfile
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -6,8 +7,11 @@ from uuid import uuid4
 
 import pytest
 
+import finanzasmmex.writer.mmex_sql as mmex_sql
 from finanzasmmex.models import CanonicalTx
+from finanzasmmex.staging.repo import StagingRepo
 from finanzasmmex.writer.mmex_sql import (
+    MmexBackupError,
     MmexLockedError,
     MmexMappingError,
     MmexSafetyError,
@@ -157,16 +161,50 @@ def create_mmex_db(path) -> None:
             """)
 
 
+def create_staging_repo(tmp_path: Path) -> StagingRepo:
+    staging_db = tmp_path / "staging.db"
+    repo = StagingRepo(str(staging_db))
+    if not staging_db.exists():
+        repo.init_db(str(Path("src/finanzasmmex/staging/schema.sql")))
+    return repo
+
+
+def backup_dir_for(tmp_path: Path) -> Path:
+    return (
+        Path(tempfile.gettempdir())
+        / f"finanzasmmex-mmex-backups-{tmp_path.name}-{uuid4().hex}"
+    )
+
+
+def write_sql_checked(
+    transactions,
+    *,
+    tmp_path: Path,
+    mmex_db_path: Path,
+    backup_dir: Path,
+    allow_shadow_write: bool = True,
+):
+    return write_sql(
+        transactions,
+        mmex_db_path=mmex_db_path,
+        backup_dir=backup_dir_for(tmp_path)
+        if backup_dir.name == "backups"
+        else backup_dir,
+        allow_shadow_write=allow_shadow_write,
+        staging_repo=create_staging_repo(tmp_path),
+    )
+
+
 def test_write_sql_inserts_transaction_and_sync_hash(tmp_path) -> None:
     mmex = tmp_path / "finanza_test.mmb"
     backups = tmp_path / "backups"
     create_mmex_db(mmex)
 
-    summary = write_sql(
+    summary = write_sql_checked(
         [make_tx()],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
 
     assert summary.items_inserted == 1
@@ -196,17 +234,17 @@ def test_write_sql_is_idempotent_by_customfield_sync_hash(tmp_path) -> None:
     backups = tmp_path / "backups"
     create_mmex_db(mmex)
 
-    write_sql(
+    write_sql_checked(
         [make_tx()],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
-    second = write_sql(
+    second = write_sql_checked(
         [make_tx()],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
 
     with sqlite3.connect(mmex) as conn:
@@ -222,11 +260,11 @@ def test_write_sql_rolls_back_when_mapping_fails(tmp_path) -> None:
     create_mmex_db(mmex)
 
     with pytest.raises(MmexMappingError):
-        write_sql(
+        write_sql_checked(
             [make_tx(account_alias="MISSING")],
+            tmp_path=tmp_path,
             mmex_db_path=mmex,
             backup_dir=tmp_path / "backups",
-            allow_shadow_write=True,
         )
 
     with sqlite3.connect(mmex) as conn:
@@ -247,6 +285,7 @@ def test_write_sql_rejects_productive_or_unapproved_paths(tmp_path) -> None:
             mmex_db_path=productive,
             backup_dir=tmp_path / "backups",
             allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
         )
     with pytest.raises(MmexSafetyError, match="explicit"):
         write_sql(
@@ -254,6 +293,7 @@ def test_write_sql_rejects_productive_or_unapproved_paths(tmp_path) -> None:
             mmex_db_path=test_db,
             backup_dir=tmp_path / "backups",
             allow_shadow_write=False,
+            staging_repo=create_staging_repo(tmp_path),
         )
 
 
@@ -266,6 +306,7 @@ def test_write_sql_skips_needs_review_without_touching_mmex(tmp_path) -> None:
         mmex_db_path=mmex,
         backup_dir=tmp_path / "backups",
         allow_shadow_write=True,
+        staging_repo=create_staging_repo(tmp_path),
     )
 
     with sqlite3.connect(mmex) as conn:
@@ -289,6 +330,7 @@ def test_write_sql_reports_locked_database(tmp_path) -> None:
                 mmex_db_path=mmex,
                 backup_dir=tmp_path / "backups",
                 allow_shadow_write=True,
+                staging_repo=create_staging_repo(tmp_path),
             )
     finally:
         locker.rollback()
@@ -314,6 +356,70 @@ def test_write_sql_rejects_disguised_productive_names(tmp_path, name) -> None:
             mmex_db_path=target,
             backup_dir=tmp_path / "backups",
             allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
+        )
+
+
+def test_write_sql_rejects_non_finanza_test_shadow_names(tmp_path) -> None:
+    target = tmp_path / "shadow_demo.mmb"
+    target.touch()
+    with pytest.raises(MmexSafetyError, match="finanza_test.mmb"):
+        write_sql(
+            [make_tx()],
+            mmex_db_path=target,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
+        )
+
+
+def test_write_sql_requires_reconcile_guard_for_eligible_writes(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    with pytest.raises(MmexSafetyError, match="staging_repo"):
+        write_sql(
+            [make_tx()],
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
+            allow_shadow_write=True,
+        )
+
+
+def test_write_sql_rejects_backup_dir_inside_repo(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    repo_backup_dir = Path.cwd() / ".phase2-backups"
+    with pytest.raises(MmexSafetyError, match="outside the repository"):
+        write_sql(
+            [make_tx()],
+            mmex_db_path=mmex,
+            backup_dir=repo_backup_dir,
+            allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
+        )
+    assert not repo_backup_dir.exists()
+
+
+def test_write_sql_fails_if_post_backup_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    create_mmex_db(mmex)
+    real_safe_backup = mmex_sql._safe_backup
+
+    def fail_post_backup(mmex_path, backup_dir, kind):
+        if kind == "post":
+            raise OSError("backup volume unavailable")
+        return real_safe_backup(mmex_path, backup_dir, kind)
+
+    monkeypatch.setattr(mmex_sql, "_safe_backup", fail_post_backup)
+
+    with pytest.raises(MmexBackupError, match="post-write backup failed"):
+        write_sql_checked(
+            [make_tx()],
+            tmp_path=tmp_path,
+            mmex_db_path=mmex,
+            backup_dir=tmp_path / "backups",
         )
 
 
@@ -400,11 +506,11 @@ def test_resolve_account_falls_back_to_card_last4(tmp_path) -> None:
         parser_version="1.0",
         fitid_synthetic="fitid-card",
     )
-    summary = write_sql(
+    summary = write_sql_checked(
         [tx],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=tmp_path / "backups",
-        allow_shadow_write=True,
     )
     assert summary.items_inserted == 1
     assert summary.mmex_account_ids[tx.tx_uid] == 20
@@ -441,8 +547,9 @@ def test_resolve_account_ambiguous_last4_raises(tmp_path) -> None:
         write_sql(
             [tx],
             mmex_db_path=mmex,
-            backup_dir=tmp_path / "backups",
+            backup_dir=backup_dir_for(tmp_path),
             allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
         )
 
 
@@ -463,19 +570,20 @@ def test_sync_hash_field_collision_raises_schema_error(tmp_path) -> None:
         write_sql(
             [make_tx()],
             mmex_db_path=mmex,
-            backup_dir=tmp_path / "backups",
+            backup_dir=backup_dir_for(tmp_path),
             allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
         )
 
 
 def test_sync_hash_unique_index_enforces_dedup(tmp_path) -> None:
     mmex = tmp_path / "finanza_test.mmb"
     create_mmex_db(mmex)
-    write_sql(
+    write_sql_checked(
         [make_tx(fitid="dup-1")],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=tmp_path / "backups",
-        allow_shadow_write=True,
     )
     # The partial UNIQUE INDEX on (FIELDID, CONTENT) must exist and block
     # any out-of-band manual duplicate insertion of the same sync_hash.
@@ -518,11 +626,11 @@ def test_apply_tags_links_unique_tags(tmp_path) -> None:
         fitid_synthetic="fitid-tags",
         tags=["joint", "personal", "joint", " "],  # duplicates + blanks
     )
-    summary = write_sql(
+    summary = write_sql_checked(
         [tx],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=tmp_path / "backups",
-        allow_shadow_write=True,
     )
     assert summary.items_inserted == 1
     mmex_tx_id = summary.mmex_tx_ids[tx.tx_uid]
@@ -578,8 +686,9 @@ def test_resolve_account_last4_does_not_match_via_wildcard_underscore(tmp_path) 
         write_sql(
             [tx],
             mmex_db_path=mmex,
-            backup_dir=tmp_path / "backups",
+            backup_dir=backup_dir_for(tmp_path),
             allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
         )
 
 
@@ -589,11 +698,11 @@ def test_partial_unique_index_recreated_after_field_recreation(tmp_path) -> None
     """
     mmex = tmp_path / "finanza_test.mmb"
     create_mmex_db(mmex)
-    write_sql(
+    write_sql_checked(
         [make_tx(fitid="run-1")],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=tmp_path / "backups",
-        allow_shadow_write=True,
     )
 
     with sqlite3.connect(mmex) as conn:
@@ -606,11 +715,11 @@ def test_partial_unique_index_recreated_after_field_recreation(tmp_path) -> None
         conn.execute("DELETE FROM CUSTOMFIELD_V1 WHERE FIELDID = ?", (old_id,))
         conn.commit()
 
-    write_sql(
+    write_sql_checked(
         [make_tx(fitid="run-2")],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=tmp_path / "backups",
-        allow_shadow_write=True,
     )
 
     with sqlite3.connect(mmex) as conn:
@@ -637,11 +746,11 @@ def test_transfer_inserts_one_mmex_row(tmp_path) -> None:
     create_mmex_db(mmex)
     debit, credit = make_transfer_pair()
 
-    summary = write_sql(
+    summary = write_sql_checked(
         [debit, credit],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
 
     assert summary.items_inserted == 1
@@ -665,17 +774,17 @@ def test_transfer_idempotent(tmp_path) -> None:
     create_mmex_db(mmex)
     debit, credit = make_transfer_pair()
 
-    first = write_sql(
+    first = write_sql_checked(
         [debit, credit],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
-    second = write_sql(
+    second = write_sql_checked(
         [debit, credit],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
 
     assert first.items_inserted == 1
@@ -695,11 +804,11 @@ def test_transfer_incomplete_pair_rejected(tmp_path) -> None:
     create_mmex_db(mmex)
     debit, _ = make_transfer_pair()  # credit leg absent from batch
 
-    summary = write_sql(
+    summary = write_sql_checked(
         [debit],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
 
     assert summary.items_inserted == 0
@@ -714,7 +823,6 @@ def test_transfer_incomplete_pair_rejected(tmp_path) -> None:
 
 def test_transfer_rollback_on_mapping_error(tmp_path) -> None:
     mmex = tmp_path / "finanza_test.mmb"
-    backups = tmp_path / "backups"
     create_mmex_db(mmex)
     debit, credit = make_transfer_pair()
     # to_account_alias points to an account that doesn't exist in this MMEX
@@ -726,8 +834,9 @@ def test_transfer_rollback_on_mapping_error(tmp_path) -> None:
         write_sql(
             [debit_bad, credit_bad],
             mmex_db_path=mmex,
-            backup_dir=backups,
+            backup_dir=backup_dir_for(tmp_path),
             allow_shadow_write=True,
+            staging_repo=create_staging_repo(tmp_path),
         )
 
     with sqlite3.connect(mmex) as conn:
@@ -743,14 +852,52 @@ def test_transfer_both_staging_tx_uids_in_summary(tmp_path) -> None:
     create_mmex_db(mmex)
     debit, credit = make_transfer_pair()
 
-    summary = write_sql(
+    summary = write_sql_checked(
         [debit, credit],
+        tmp_path=tmp_path,
         mmex_db_path=mmex,
         backup_dir=backups,
-        allow_shadow_write=True,
     )
 
     # Both staging tx_uids must appear in mmex_tx_ids, mapped to the same MMEX row
     assert debit.tx_uid in summary.mmex_tx_ids
     assert credit.tx_uid in summary.mmex_tx_ids
     assert summary.mmex_tx_ids[debit.tx_uid] == summary.mmex_tx_ids[credit.tx_uid]
+
+
+def test_transfer_skips_pair_when_credit_leg_sync_hash_already_exists(tmp_path) -> None:
+    mmex = tmp_path / "finanza_test.mmb"
+    backups = tmp_path / "backups"
+    create_mmex_db(mmex)
+    debit, credit = make_transfer_pair()
+
+    write_sql_checked(
+        [debit, credit],
+        tmp_path=tmp_path,
+        mmex_db_path=mmex,
+        backup_dir=backups,
+    )
+    with sqlite3.connect(mmex) as conn:
+        field_id = conn.execute(
+            "SELECT FIELDID FROM CUSTOMFIELD_V1 WHERE DESCRIPTION = 'sync_hash'"
+        ).fetchone()[0]
+        conn.execute(
+            "DELETE FROM CUSTOMFIELDDATA_V1 WHERE FIELDID = ? AND CONTENT = ?",
+            (field_id, debit.fitid_synthetic),
+        )
+        conn.commit()
+
+    second = write_sql_checked(
+        [debit, credit],
+        tmp_path=tmp_path,
+        mmex_db_path=mmex,
+        backup_dir=backups,
+    )
+
+    assert second.items_inserted == 0
+    assert second.items_skipped_duplicate == 1
+    with sqlite3.connect(mmex) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM CHECKINGACCOUNT_V1"
+        ).fetchone()[0]
+    assert count == 1

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import date
 from decimal import Decimal
@@ -22,9 +23,10 @@ def _payment_payload() -> dict:
 
 
 def test_parse_payment_fixture_maps_canonical_fields() -> None:
-    payload = _payment_payload()
+    raw_text = FIXTURE.read_text(encoding="utf-8")
+    payload = json.loads(raw_text)
 
-    tx = parse_payment(payload, source_file=str(FIXTURE))
+    tx = parse_payment(payload, source_file=str(FIXTURE), raw_text=raw_text)
 
     assert tx.owner == "ricardo"
     assert tx.source_type == "mp_api"
@@ -44,6 +46,37 @@ def test_parse_payment_fixture_maps_canonical_fields() -> None:
     assert tx.parser_version == "1.0"
     assert tx.fitid_synthetic is None
     assert tx.needs_review is False
+
+
+def test_parse_payment_hashes_full_raw_text_when_supplied() -> None:
+    raw_text = FIXTURE.read_text(encoding="utf-8")
+    payload = json.loads(raw_text)
+
+    tx = parse_payment(payload, source_file=str(FIXTURE), raw_text=raw_text)
+
+    assert tx.raw_text == raw_text
+    assert tx.content_sha256 == hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+
+def test_parse_payment_infers_debit_transfer_from_operation_type() -> None:
+    payload = _payment_payload()
+    payload["operation_type"] = "money_transfer"
+
+    tx = parse_payment(payload, raw_text=json.dumps(payload, sort_keys=True))
+
+    assert tx.direction == "debit"
+    assert tx.tx_type == "transfer_out"
+    assert tx.needs_review is False
+
+
+def test_parse_payment_marks_unknown_operation_for_review() -> None:
+    payload = _payment_payload()
+    payload["operation_type"] = "unexpected_operation"
+
+    tx = parse_payment(payload)
+
+    assert tx.needs_review is True
+    assert "operation_type_unknown" in str(tx.review_reason)
 
 
 def test_parse_payment_rejects_non_approved() -> None:

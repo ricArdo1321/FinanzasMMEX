@@ -2,6 +2,82 @@
 
 Registra cambios al contrato JSON `{ok, data, errors, warnings, run_id}` consumido por la UI WPF. La forma del envelope se valida contra `contracts/envelope.schema.json`.
 
+## 2026-05-10 - Phase 4.8 WPF review workflow
+
+### Added
+
+- `review list` acepta filtros adicionales para la UI WPF:
+  `--source-type`, `--category` y `--merchant`.
+- `data.filters` de `review list` ecoa tambien `source_type`, `category` y
+  `merchant`.
+- La UI WPF consume el DTO completo de `review list`, resultados
+  `review bulk-update|bulk-resolve` y `reports latest` sin acceder directo a
+  SQLite/MMEX.
+
+### Breaking changes
+
+Ninguno. Los filtros nuevos son opcionales y los campos del envelope son
+aditivos.
+
+## 2026-05-10 - Phase 4.7 bulk review CLI
+
+### Added
+
+- Nuevos comandos `review bulk-update --input <json>` y
+  `review bulk-resolve --input <json>`.
+- El input es un arreglo JSON. Cada item debe incluir `tx_uid`.
+  - `bulk-update` acepta campos reviewables: `owner`, `category_guess`,
+    `subcategory_guess`, `merchant_norm`, `tags`, `needs_review` y
+    `review_reason`.
+  - `bulk-resolve` acepta `status=exported|inserted|rejected`.
+- `data.results[]` devuelve una fila por item con `index`, `tx_uid`, `ok`,
+  `updated_fields`, `tx` o `error`.
+- Si hay fallos parciales, el comando devuelve envelope JSON con `ok=false`,
+  exit `2`, `errors[0].code=BULK_PARTIAL_FAILURE` y conserva en `data.results`
+  tanto filas exitosas como fallidas.
+
+### Breaking changes
+
+Ninguno. Los comandos existentes `review list|update|resolve` no cambian.
+
+## 2026-05-10 - Phase 4.6 local needs_review alerts
+
+### Added
+
+- Nuevo comando `notify needs-review` para emitir una alerta local en el
+  envelope JSON solo cuando existan transacciones con `needs_review=true`.
+- `notify needs-review --dry-run` se conserva como flag de compatibilidad; el
+  comando es siempre local-only y no ejecuta red.
+- El payload incluye solo resumen minimo: conteo, estados MMEX, rango de fechas
+  y `report_path` si existe. No incluye `raw_text`, cuenta, comercio, hashes,
+  tokens ni rutas de archivos fuente.
+- No se agregan nuevos secretos, vault keys ni canales externos.
+
+### Breaking changes
+
+Ninguno. El cambio agrega un nuevo subcomando y no modifica contratos
+existentes.
+
+## 2026-05-10 - Phase 4.5 monthly dashboards
+
+### Added
+
+- Nuevo comando `reports monthly --month YYYY-MM` que genera
+  `dashboard_YYYY-MM.html` bajo `C:\Finanzas\reports` por defecto.
+- Nuevos comandos `reports list` y `reports latest` para descubrir dashboards
+  HTML locales con envelope JSON estable.
+- El dashboard mensual agrega `canonical_tx` por categoria, tag, comercio y
+  cuenta, mas totales de debito/credito/neto, `needs_review` y conteos de
+  estado MMEX.
+- `reports monthly` acepta `--reports-dir` y `--output`, pero valida que el
+  HTML quede dentro del directorio de reportes y reutiliza `safe_output_path`
+  para rechazar `.mmb`/`.emb`.
+
+### Breaking changes
+
+Ninguno. El cambio agrega un nuevo subcomando y no modifica contratos
+existentes.
+
 ## 2026-05-10 - Phase 4.1 loader foundation
 
 ### Added

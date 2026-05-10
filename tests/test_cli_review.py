@@ -87,6 +87,53 @@ def test_review_list_filters_by_status_and_owner(tmp_path: Path) -> None:
     assert payload["data"]["items"][0]["mmex_status"] == "pending"
 
 
+def test_review_list_filters_by_source_category_and_merchant(tmp_path: Path) -> None:
+    db = init_db(tmp_path)
+    cafe = quickadd_basic(db, merchant="Cafe Lola")
+    pharmacy = quickadd_basic(db, merchant="Farmacia Norte")
+    run_cli(
+        "review",
+        "update",
+        "--db",
+        str(db),
+        "--tx-uid",
+        cafe["data"]["tx_uid"],
+        "--category-guess",
+        "Cafes",
+    )
+    run_cli(
+        "review",
+        "update",
+        "--db",
+        str(db),
+        "--tx-uid",
+        pharmacy["data"]["tx_uid"],
+        "--category-guess",
+        "Salud",
+    )
+
+    result = run_cli(
+        "review",
+        "list",
+        "--db",
+        str(db),
+        "--source-type",
+        "manual",
+        "--category",
+        "Cafes",
+        "--merchant",
+        "Cafe",
+    )
+
+    payload = parse(result)
+    assert result.returncode == 0, result.stdout
+    assert payload["data"]["count"] == 1
+    assert payload["data"]["items"][0]["tx_uid"] == cafe["data"]["tx_uid"]
+    assert payload["data"]["filters"]["source_type"] == "manual"
+    assert payload["data"]["filters"]["category"] == "Cafes"
+    assert payload["data"]["filters"]["merchant"] == "Cafe"
+
+
 def test_review_list_invalid_status_returns_validation(tmp_path: Path) -> None:
     db = init_db(tmp_path)
     result = run_cli("review", "list", "--db", str(db), "--status", "bogus")
@@ -201,3 +248,139 @@ def test_review_resolve_invalid_status_returns_validation(tmp_path: Path) -> Non
     payload = parse(result)
     assert result.returncode == 2
     assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
+
+
+def test_review_bulk_update_applies_valid_batch(tmp_path: Path) -> None:
+    db = init_db(tmp_path)
+    created = quickadd_basic(db)
+    batch = tmp_path / "bulk-update.json"
+    batch.write_text(
+        json.dumps(
+            [
+                {
+                    "tx_uid": created["data"]["tx_uid"],
+                    "category_guess": "Cafes",
+                    "tags": ["joint", "personal"],
+                    "needs_review": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_cli(
+        "review",
+        "bulk-update",
+        "--db",
+        str(db),
+        "--input",
+        str(batch),
+    )
+
+    payload = parse(result)
+    assert result.returncode == 0, result.stdout
+    assert payload["ok"] is True
+    assert payload["data"]["items_total"] == 1
+    assert payload["data"]["items_ok"] == 1
+    row = payload["data"]["results"][0]
+    assert row["ok"] is True
+    assert row["updated_fields"] == ["category_guess", "needs_review", "tags"]
+    assert row["tx"]["category_guess"] == "Cafes"
+    assert row["tx"]["tags"] == ["joint", "personal"]
+    assert row["tx"]["needs_review"] is True
+
+
+def test_review_bulk_update_reports_missing_tx(tmp_path: Path) -> None:
+    db = init_db(tmp_path)
+    batch = tmp_path / "bulk-update-missing.json"
+    batch.write_text(
+        json.dumps([{"tx_uid": "ghost", "category_guess": "Cafes"}]),
+        encoding="utf-8",
+    )
+
+    result = run_cli(
+        "review",
+        "bulk-update",
+        "--db",
+        str(db),
+        "--input",
+        str(batch),
+    )
+
+    payload = parse(result)
+    assert result.returncode == 2
+    assert payload["ok"] is False
+    assert payload["errors"][0]["code"] == "BULK_PARTIAL_FAILURE"
+    assert payload["data"]["items_error"] == 1
+    row = payload["data"]["results"][0]
+    assert row["tx_uid"] == "ghost"
+    assert row["ok"] is False
+    assert row["error"]["message"] == "Transaction not found"
+
+
+def test_review_bulk_resolve_reports_invalid_status(tmp_path: Path) -> None:
+    db = init_db(tmp_path)
+    created = quickadd_basic(db)
+    batch = tmp_path / "bulk-resolve-invalid.json"
+    batch.write_text(
+        json.dumps([{"tx_uid": created["data"]["tx_uid"], "status": "pending"}]),
+        encoding="utf-8",
+    )
+
+    result = run_cli(
+        "review",
+        "bulk-resolve",
+        "--db",
+        str(db),
+        "--input",
+        str(batch),
+    )
+
+    payload = parse(result)
+    assert result.returncode == 2
+    assert payload["data"]["items_error"] == 1
+    row = payload["data"]["results"][0]
+    assert row["ok"] is False
+    assert row["error"]["details"]["field"] == "status"
+
+
+def test_review_bulk_resolve_mixed_partial_applies_valid_rows(
+    tmp_path: Path,
+) -> None:
+    db = init_db(tmp_path)
+    first = quickadd_basic(db, merchant="Primera")
+    second = quickadd_basic(db, merchant="Segunda")
+    first_uid = first["data"]["tx_uid"]
+    batch = tmp_path / "bulk-resolve-partial.json"
+    batch.write_text(
+        json.dumps(
+            [
+                {"tx_uid": first_uid, "status": "exported"},
+                {"tx_uid": "ghost", "status": "rejected"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_cli(
+        "review",
+        "bulk-resolve",
+        "--db",
+        str(db),
+        "--input",
+        str(batch),
+    )
+
+    payload = parse(result)
+    assert result.returncode == 2
+    assert payload["ok"] is False
+    assert payload["data"]["items_ok"] == 1
+    assert payload["data"]["items_error"] == 1
+    assert payload["data"]["results"][0]["tx"]["mmex_status"] == "exported"
+    assert payload["data"]["results"][1]["error"]["message"] == "Transaction not found"
+
+    exported = parse(run_cli("review", "list", "--db", str(db), "--status", "exported"))
+    pending = parse(run_cli("review", "list", "--db", str(db), "--status", "pending"))
+    assert exported["data"]["count"] == 1
+    assert pending["data"]["count"] == 1
+    assert pending["data"]["items"][0]["tx_uid"] == second["data"]["tx_uid"]

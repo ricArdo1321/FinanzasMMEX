@@ -151,6 +151,9 @@ class StagingRepo:
         needs_review_only: bool = False,
         since: str | None = None,
         until: str | None = None,
+        source_type: str | None = None,
+        category_guess: str | None = None,
+        merchant_query: str | None = None,
         limit: int = 200,
     ) -> List[CanonicalTx]:
         clauses: list[str] = []
@@ -172,6 +175,16 @@ class StagingRepo:
         if until is not None:
             clauses.append("COALESCE(posted_date, booking_date, event_date) <= ?")
             params.append(until)
+        if source_type is not None:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if category_guess is not None:
+            clauses.append("category_guess = ?")
+            params.append(category_guess)
+        if merchant_query is not None:
+            clauses.append("(merchant_norm LIKE ? OR merchant_raw LIKE ?)")
+            like = f"%{merchant_query}%"
+            params.extend([like, like])
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = (

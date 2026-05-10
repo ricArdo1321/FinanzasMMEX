@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FinanzasMMEX.Core\FinanzasMMEX.Core.csproj" />
+    <ProjectReference Include="..\FinanzasMMEX.App\FinanzasMMEX.App.csproj" />
   </ItemGroup>
 
 </Project>
