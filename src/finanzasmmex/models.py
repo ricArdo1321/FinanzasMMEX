@@ -4,12 +4,14 @@ from decimal import Decimal
 from typing import Literal
 from uuid import uuid4
 
+from .ownership import Owner
+
 
 @dataclass(frozen=True)
 class CanonicalTx:
     # Identidad y origen
     tx_uid: str = field(default_factory=lambda: str(uuid4()))
-    owner: Literal["ricardo", "laura", "joint"] = "ricardo"
+    owner: Owner = "ricardo"
     source_type: Literal[
         "email", "mp_api", "scraping", "ofx", "qif", "csv", "xlsx", "pdf", "manual"
     ] = "email"
@@ -51,7 +53,7 @@ class CanonicalTx:
     # Categorización
     category_guess: str | None = None
     subcategory_guess: str | None = None
-    tags: list[str] = field(default_factory=list)  # ['joint'], ['personal']
+    tags: list[str] = field(default_factory=list)
 
     # Trazabilidad
     parser_name: str = ""  # 'be_email_v3'

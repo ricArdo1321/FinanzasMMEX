@@ -48,7 +48,15 @@ BASE_ARGS = (
 
 def test_quickadd_create_inserts_canonical_tx(tmp_path: Path) -> None:
     db = init_db(tmp_path)
-    result = run_cli("quickadd", "create", "--db", str(db), *BASE_ARGS)
+    result = run_cli(
+        "quickadd",
+        "create",
+        "--db",
+        str(db),
+        *BASE_ARGS,
+        "--tags",
+        "personal-r,cafe",
+    )
 
     payload = parse(result)
     assert result.returncode == 0, result.stdout
@@ -59,6 +67,7 @@ def test_quickadd_create_inserts_canonical_tx(tmp_path: Path) -> None:
     assert payload["data"]["tx"]["parser_name"] not in {"", None}  # parser metadata
     assert payload["data"]["tx"]["amount"] == "5500.00"
     assert payload["data"]["tx"]["mmex_status"] == "pending"
+    assert payload["data"]["tx"]["tags"] == ["Personal-R", "cafe"]
 
 
 def test_quickadd_create_dedup_returns_existing(tmp_path: Path) -> None:
@@ -83,6 +92,24 @@ def test_quickadd_invalid_owner_returns_validation(tmp_path: Path) -> None:
     payload = parse(result)
     assert result.returncode == 2
     assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
+
+
+def test_quickadd_conflicting_ownership_tag_returns_validation(tmp_path: Path) -> None:
+    db = init_db(tmp_path)
+    result = run_cli(
+        "quickadd",
+        "create",
+        "--db",
+        str(db),
+        *BASE_ARGS,
+        "--tags",
+        "Conjunto",
+    )
+
+    payload = parse(result)
+    assert result.returncode == 2
+    assert payload["errors"][0]["code"] == "VALIDATION_ERROR"
+    assert "conflicts with owner ricardo" in payload["errors"][0]["message"]
 
 
 def test_quickadd_invalid_date_returns_validation(tmp_path: Path) -> None:

@@ -154,6 +154,7 @@ class StagingRepo:
         source_type: str | None = None,
         category_guess: str | None = None,
         merchant_query: str | None = None,
+        tag: str | None = None,
         limit: int = 200,
     ) -> List[CanonicalTx]:
         clauses: list[str] = []
@@ -185,6 +186,12 @@ class StagingRepo:
             clauses.append("(merchant_norm LIKE ? OR merchant_raw LIKE ?)")
             like = f"%{merchant_query}%"
             params.extend([like, like])
+        if tag is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(canonical_tx.tags_json) "
+                "WHERE json_each.value = ?)"
+            )
+            params.append(tag)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = (

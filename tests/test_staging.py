@@ -199,3 +199,36 @@ def test_upsert_and_retrieve_to_account_alias(tmp_path) -> None:
     retrieved = repo.get_tx_by_fitid("fitid-transfer-1")
     assert retrieved is not None
     assert retrieved.to_account_alias == "MACH_R"
+
+
+def test_list_txs_filters_by_exact_tag(repo) -> None:
+    ricardo = CanonicalTx(
+        owner="ricardo",
+        source_type="email",
+        content_sha256="hash-ricardo",
+        amount=Decimal("100.50"),
+        account_alias="BE_Main",
+        tx_type="purchase",
+        parser_name="test_parser",
+        fitid_synthetic="fitid_ricardo",
+        tags=["Personal-R", "cafes"],
+    )
+    laura = CanonicalTx(
+        owner="laura",
+        source_type="email",
+        content_sha256="hash-laura",
+        amount=Decimal("200.50"),
+        account_alias="BE_Laura",
+        tx_type="purchase",
+        parser_name="test_parser",
+        fitid_synthetic="fitid_laura",
+        tags=["Personal-L", "cafes"],
+    )
+
+    repo.upsert_batch([ricardo, laura])
+
+    personal_r = repo.list_txs(tag="Personal-R")
+    assert [tx.fitid_synthetic for tx in personal_r] == ["fitid_ricardo"]
+
+    cafes = repo.list_txs(tag="cafes")
+    assert {tx.fitid_synthetic for tx in cafes} == {"fitid_ricardo", "fitid_laura"}

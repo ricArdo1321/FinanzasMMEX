@@ -2,6 +2,25 @@
 
 Registra cambios al contrato JSON `{ok, data, errors, warnings, run_id}` consumido por la UI WPF. La forma del envelope se valida contra `contracts/envelope.schema.json`.
 
+## 2026-05-10 - Phase 5.0 multiuser ownership contract
+
+### Added
+
+- Nuevo contrato operativo en `docs/multiuser-contract.md` para owners
+  `ricardo|laura|joint`, tags reservados `Personal-R`, `Personal-L` y
+  `Conjunto`, y aliases de cuenta sin identificadores completos.
+- `review list` acepta `--tag` y devuelve `data.filters.tag` normalizado.
+
+### Changed
+
+- `quickadd create`, `review update` y `review bulk-update` normalizan aliases
+  de tags de ownership y rechazan conflictos entre `owner` y tags reservados.
+
+### Breaking changes
+
+Ninguno. La validacion nueva solo aplica cuando se entregan tags reservados de
+ownership o aliases equivalentes.
+
 ## 2026-05-10 - Phase 4.8 WPF review workflow
 
 ### Added

@@ -441,3 +441,63 @@ Resultado: #17 queda abierto y bloqueado por insumos reales. El proximo paso es
 proveer o generar fuera del repo `C:\Finanzas\staging.db` con lote real y
 `C:\Finanzas\finanza_test.mmb`, luego ejecutar el comando documentado en
 `docs/shadow-mode/phase2-week-1.md` durante 7 dias.
+
+---
+
+# Issue #6 - Fase 5 Laura Multiusuario
+
+## Checklist
+
+- [x] Leer issue #6.
+- [x] Confirmar que es una epica demasiado amplia para implementar en un solo
+  corte.
+- [x] Crear subissues #38, #39, #40, #41 y #42.
+- [x] Comentar la division en #6.
+- [ ] Cerrar #6 solo despues del gate #42.
+
+## Revision
+
+Fase 5 fue dividida en:
+
+- #38 Fase 5.0: contrato multiusuario owner/tags/account aliases.
+- #39 Fase 5.1: aislamiento de credenciales y sesiones Laura.
+- #40 Fase 5.2: ingesta Laura con fixtures anonimizadas.
+- #41 Fase 5.3: WPF y reportes multiusuario.
+- #42 Fase 5.4: gate final privacidad multiusuario.
+
+---
+
+# Issue #38 - Fase 5.0 Contrato multiusuario
+
+## Checklist
+
+- [x] Documentar contrato owner/tags/account_alias.
+- [x] Centralizar owners y tags reservados.
+- [x] Normalizar aliases de tags de ownership.
+- [x] Validar conflicto owner/tag en quickadd y review.
+- [x] Agregar filtro `review list --tag`.
+- [x] Ejecutar tests y checks.
+- [ ] Comentar/cerrar #38 con evidencia.
+
+## Revision
+
+Implementado contrato base de ownership sin cambio de schema: owners validos
+`ricardo`, `laura`, `joint`; tags reservados `Personal-R`, `Personal-L` y
+`Conjunto`; filtro CLI exacto por tag normalizado; validacion en quickadd,
+review update y bulk-update.
+
+Evidencia:
+- `pytest tests/test_ownership.py tests/test_staging.py tests/test_cli_quickadd.py tests/test_cli_review.py --basetemp .pytest-phase5-contract -p no:cacheprovider`: 33 passed.
+- `pytest --basetemp .pytest-phase5-contract-full -p no:cacheprovider`: 217 passed.
+- `ruff check src tests`: OK.
+- `mypy src`: OK.
+- `detect_secrets scan --baseline .secrets.baseline`: OK.
+- `git diff --check`: OK.
+
+Checklists locales:
+- `cli-contract-checker`: cambio aditivo, `review list --tag` opcional,
+  `data.filters.tag` aditivo y errores via envelope JSON.
+- `staging-schema-validator`: sin cambio de schema; filtro por tag usa
+  `tags_json` existente.
+- `secrets-pii-auditor`: sin secretos ni PII real; docs usan aliases ficticios
+  y parciales.

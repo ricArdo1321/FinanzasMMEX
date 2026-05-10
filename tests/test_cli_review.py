@@ -30,16 +30,23 @@ def init_db(tmp_path: Path) -> Path:
     return db
 
 
-def quickadd_basic(db: Path, *, merchant: str = "Cafe Lola") -> dict:
-    result = run_cli(
+def quickadd_basic(
+    db: Path,
+    *,
+    merchant: str = "Cafe Lola",
+    owner: str = "ricardo",
+    account_alias: str = "BE_Ricardo_RUT",
+    tags: str | None = None,
+) -> dict:
+    args = [
         "quickadd",
         "create",
         "--db",
         str(db),
         "--owner",
-        "ricardo",
+        owner,
         "--account-alias",
-        "BE_Ricardo_RUT",
+        account_alias,
         "--amount",
         "10000",
         "--direction",
@@ -48,7 +55,10 @@ def quickadd_basic(db: Path, *, merchant: str = "Cafe Lola") -> dict:
         "2026-04-15",
         "--merchant-raw",
         merchant,
-    )
+    ]
+    if tags is not None:
+        args.extend(["--tags", tags])
+    result = run_cli(*args)
     assert result.returncode == 0, result.stdout
     return parse(result)
 
@@ -134,6 +144,34 @@ def test_review_list_filters_by_source_category_and_merchant(tmp_path: Path) -> 
     assert payload["data"]["filters"]["merchant"] == "Cafe"
 
 
+def test_review_list_filters_by_normalized_tag(tmp_path: Path) -> None:
+    db = init_db(tmp_path)
+    ricardo = quickadd_basic(db, merchant="Cafe Ricardo", tags="personal-r,cafes")
+    quickadd_basic(
+        db,
+        merchant="Cafe Laura",
+        owner="laura",
+        account_alias="BE_Laura_RUT",
+        tags="Personal-L,cafes",
+    )
+
+    result = run_cli(
+        "review",
+        "list",
+        "--db",
+        str(db),
+        "--tag",
+        "Personal_R",
+    )
+
+    payload = parse(result)
+    assert result.returncode == 0, result.stdout
+    assert payload["data"]["count"] == 1
+    assert payload["data"]["items"][0]["tx_uid"] == ricardo["data"]["tx_uid"]
+    assert payload["data"]["items"][0]["tags"] == ["Personal-R", "cafes"]
+    assert payload["data"]["filters"]["tag"] == "Personal-R"
+
+
 def test_review_list_invalid_status_returns_validation(tmp_path: Path) -> None:
     db = init_db(tmp_path)
     result = run_cli("review", "list", "--db", str(db), "--status", "bogus")
@@ -160,7 +198,7 @@ def test_review_update_applies_fields(tmp_path: Path) -> None:
         "--needs-review",
         "true",
         "--tags",
-        "joint, personal",
+        "personal-r, personal",
     )
     payload = parse(result)
     assert result.returncode == 0, result.stdout
@@ -172,7 +210,7 @@ def test_review_update_applies_fields(tmp_path: Path) -> None:
     assert "tags_json" not in updated_fields
     assert payload["data"]["tx"]["category_guess"] == "Cafes"
     assert payload["data"]["tx"]["needs_review"] is True
-    assert payload["data"]["tx"]["tags"] == ["joint", "personal"]
+    assert payload["data"]["tx"]["tags"] == ["Personal-R", "personal"]
 
 
 def test_review_update_unknown_tx_returns_validation(tmp_path: Path) -> None:
@@ -260,7 +298,7 @@ def test_review_bulk_update_applies_valid_batch(tmp_path: Path) -> None:
                 {
                     "tx_uid": created["data"]["tx_uid"],
                     "category_guess": "Cafes",
-                    "tags": ["joint", "personal"],
+                    "tags": ["Personal-R", "personal"],
                     "needs_review": True,
                 }
             ]
@@ -286,8 +324,37 @@ def test_review_bulk_update_applies_valid_batch(tmp_path: Path) -> None:
     assert row["ok"] is True
     assert row["updated_fields"] == ["category_guess", "needs_review", "tags"]
     assert row["tx"]["category_guess"] == "Cafes"
-    assert row["tx"]["tags"] == ["joint", "personal"]
+    assert row["tx"]["tags"] == ["Personal-R", "personal"]
     assert row["tx"]["needs_review"] is True
+
+
+def test_review_bulk_update_rejects_conflicting_ownership_tag(
+    tmp_path: Path,
+) -> None:
+    db = init_db(tmp_path)
+    created = quickadd_basic(db)
+    batch = tmp_path / "bulk-update-conflict.json"
+    batch.write_text(
+        json.dumps(
+            [
+                {
+                    "tx_uid": created["data"]["tx_uid"],
+                    "tags": ["Conjunto"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_cli(
+        "review", "bulk-update", "--db", str(db), "--input", str(batch)
+    )
+    payload = parse(result)
+    assert result.returncode == 2
+    assert payload["data"]["results"][0]["ok"] is False
+    assert "conflicts with owner ricardo" in payload["data"]["results"][0]["error"][
+        "message"
+    ]
 
 
 def test_review_bulk_update_reports_missing_tx(tmp_path: Path) -> None:

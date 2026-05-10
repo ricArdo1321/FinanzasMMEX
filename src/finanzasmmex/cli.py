@@ -31,6 +31,12 @@ from .orchestrator.jobs import (
     run_scraping_be,
     run_scraping_cmr,
 )
+from .ownership import (
+    VALID_OWNERS,
+    normalize_tag,
+    normalize_tags,
+    validate_owner_tags,
+)
 from .reports import (
     generate_monthly_dashboard,
     latest_monthly_dashboard,
@@ -58,7 +64,6 @@ DEFAULT_OFX_OUTPUT = rf"{DEFAULT_REPORTS_DIR}\finanzasmmex.ofx"
 DEFAULT_BACKUP_DIR = rf"{DEFAULT_DATA_DIR}\backups"
 DEFAULT_DROP_DIR = rf"{DEFAULT_DATA_DIR}\drop"
 
-VALID_OWNERS = {"ricardo", "laura", "joint"}
 VALID_DIRECTIONS = {"debit", "credit"}
 VALID_TX_TYPES = {
     "purchase",
@@ -659,7 +664,7 @@ def _parse_iso_date(value: str, field_name: str) -> date:
 def _parse_tags(raw: str | None) -> list[str]:
     if not raw:
         return []
-    return [tag.strip() for tag in raw.split(",") if tag.strip()]
+    return normalize_tags(raw.split(","))
 
 
 def _parse_bool_flag(value: str, field_name: str) -> bool:
@@ -778,6 +783,7 @@ def _run_review_list(args: argparse.Namespace) -> NoReturn:
         source_type=args.source_type,
         category_guess=args.category,
         merchant_query=args.merchant,
+        tag=normalize_tag(args.tag) if args.tag else None,
         limit=args.limit,
     )
     items = [_tx_to_dict(tx) for tx in txs]
@@ -796,6 +802,7 @@ def _run_review_list(args: argparse.Namespace) -> NoReturn:
                 "source_type": args.source_type,
                 "category": args.category,
                 "merchant": args.merchant,
+                "tag": normalize_tag(args.tag) if args.tag else None,
                 "limit": args.limit,
             },
         },
@@ -804,6 +811,11 @@ def _run_review_list(args: argparse.Namespace) -> NoReturn:
 
 def _run_review_update(args: argparse.Namespace) -> NoReturn:
     _validate_staging_db(args.db)
+    repo = StagingRepo(args.db)
+    current_tx = repo.get_tx(args.tx_uid)
+    if current_tx is None:
+        _validation_error("Transaction not found", {"tx_uid": args.tx_uid})
+
     fields: dict[str, object] = {}
     if args.owner is not None:
         if args.owner not in VALID_OWNERS:
@@ -819,7 +831,18 @@ def _run_review_update(args: argparse.Namespace) -> NoReturn:
     if args.merchant_norm is not None:
         fields["merchant_norm"] = args.merchant_norm
     if args.tags is not None:
-        fields["tags_json"] = json.dumps(_parse_tags(args.tags))
+        tags = _parse_tags(args.tags)
+        owner_for_tags = str(args.owner or current_tx.owner)
+        try:
+            validate_owner_tags(owner_for_tags, tags)
+        except ValueError as exc:
+            _validation_error(str(exc), {"field": "tags", "owner": owner_for_tags})
+        fields["tags_json"] = json.dumps(tags)
+    elif args.owner is not None:
+        try:
+            validate_owner_tags(args.owner, current_tx.tags)
+        except ValueError as exc:
+            _validation_error(str(exc), {"field": "owner", "tags": current_tx.tags})
     if args.needs_review is not None:
         fields["needs_review"] = (
             1 if _parse_bool_flag(args.needs_review, "--needs-review") else 0
@@ -831,20 +854,6 @@ def _run_review_update(args: argparse.Namespace) -> NoReturn:
         _validation_error(
             "At least one updatable field must be provided",
             {"tx_uid": args.tx_uid},
-        )
-
-    repo = StagingRepo(args.db)
-    if repo.get_tx(args.tx_uid) is None:
-        _emit(
-            False,
-            errors=[
-                {
-                    "code": "VALIDATION_ERROR",
-                    "message": "Transaction not found",
-                    "details": {"tx_uid": args.tx_uid},
-                }
-            ],
-            exit_code=2,
         )
 
     repo.update_tx_fields(args.tx_uid, fields)
@@ -916,16 +925,8 @@ def _run_review_bulk_update(args: argparse.Namespace) -> NoReturn:
             )
             continue
 
-        field_result = _bulk_update_fields(item)
-        if "error" in field_result:
-            error = field_result["error"]
-            assert isinstance(error, dict)
-            results.append(_bulk_error(index, str(error["message"]), error, tx_uid))
-            continue
-
-        fields = field_result["fields"]
-        assert isinstance(fields, dict)
-        if repo.get_tx(tx_uid) is None:
+        current_tx = repo.get_tx(tx_uid)
+        if current_tx is None:
             results.append(
                 _bulk_error(
                     index,
@@ -936,6 +937,15 @@ def _run_review_bulk_update(args: argparse.Namespace) -> NoReturn:
             )
             continue
 
+        field_result = _bulk_update_fields(item, current_tx)
+        if "error" in field_result:
+            error = field_result["error"]
+            assert isinstance(error, dict)
+            results.append(_bulk_error(index, str(error["message"]), error, tx_uid))
+            continue
+
+        fields = field_result["fields"]
+        assert isinstance(fields, dict)
         repo.update_tx_fields(tx_uid, fields)
         updated_tx = repo.get_tx(tx_uid)
         if updated_tx is None:
@@ -1053,7 +1063,9 @@ def _bulk_tx_uid(item: dict[str, object]) -> str | None:
     return tx_uid.strip()
 
 
-def _bulk_update_fields(item: dict[str, object]) -> dict[str, object]:
+def _bulk_update_fields(
+    item: dict[str, object], current_tx: CanonicalTx
+) -> dict[str, object]:
     allowed = {
         "tx_uid",
         "owner",
@@ -1094,7 +1106,17 @@ def _bulk_update_fields(item: dict[str, object]) -> dict[str, object]:
         tags = _bulk_tags(item["tags"])
         if tags is None:
             return {"error": {"message": "tags must be string or array of strings"}}
+        owner_for_tags = str(fields.get("owner", current_tx.owner))
+        try:
+            validate_owner_tags(owner_for_tags, tags)
+        except ValueError as exc:
+            return {"error": {"message": str(exc)}}
         fields["tags_json"] = json.dumps(tags)
+    elif "owner" in fields:
+        try:
+            validate_owner_tags(str(fields["owner"]), current_tx.tags)
+        except ValueError as exc:
+            return {"error": {"message": str(exc)}}
     if "needs_review" in item:
         needs_review = _bulk_bool(item["needs_review"])
         if needs_review is None:
@@ -1109,7 +1131,7 @@ def _bulk_tags(value: object) -> list[str] | None:
     if isinstance(value, str):
         return _parse_tags(value)
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return [tag.strip() for tag in value if tag.strip()]
+        return normalize_tags(value)
     return None
 
 
@@ -1251,6 +1273,11 @@ def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
             "tx-type invalid",
             {"field": "--tx-type", "value": args.tx_type},
         )
+    tags = _parse_tags(args.tags)
+    try:
+        validate_owner_tags(args.owner, tags)
+    except ValueError as exc:
+        _validation_error(str(exc), {"field": "--tags", "owner": args.owner})
 
     event_date = _parse_iso_date(args.date, "--date")
 
@@ -1284,7 +1311,7 @@ def _run_quickadd_create(args: argparse.Namespace) -> NoReturn:
         tx_type=args.tx_type,
         category_guess=args.category_guess,
         subcategory_guess=args.subcategory_guess,
-        tags=_parse_tags(args.tags),
+        tags=tags,
         parser_name="manual",
         parser_version="1.0",
         needs_review=False,
@@ -1651,6 +1678,11 @@ def main() -> None:
         "--merchant",
         default=None,
         help="Filter by merchant_norm or merchant_raw substring",
+    )
+    review_list_parser.add_argument(
+        "--tag",
+        default=None,
+        help="Filter by exact tag after ownership-tag normalization",
     )
     review_list_parser.add_argument(
         "--limit", type=int, default=200, help="Max rows to return (default 200)"
