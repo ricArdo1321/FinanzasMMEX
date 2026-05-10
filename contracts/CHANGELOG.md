@@ -63,6 +63,25 @@ exitosas.
 
 Ninguno. El comportamiento es aditivo para `run --source drop`.
 
+## 2026-05-10 - Phase 4.4 drop folder states
+
+### Added
+
+- `run --source drop` acepta carpeta, con default `C:\Finanzas\drop` cuando no
+  se pasa `--input`.
+- La carpeta drop opera como `incoming` y crea subcarpetas `processing`,
+  `processed` y `error`.
+- Cada archivo se valida como estable antes de moverlo a `processing`.
+- Archivos exitosos terminan en `processed`; archivos malformados/no
+  soportados terminan en `error` con envelope JSON valido.
+- El resumen `data` agrega `files_seen`, `files_processed`, `files_error`,
+  `processed_files[]`, `error_files[]` y rutas de los directorios de estado.
+
+### Breaking changes
+
+Ninguno. La ingesta de un archivo individual con `--input <archivo>` mantiene
+el contrato agregado en Fase 4.1/4.2.
+
 ## 2026-05-09 - Phase 3 scraping headful
 
 ### Added

@@ -2,13 +2,15 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import sqlite3
 import sys
+import time
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from .adapters.file_loaders import FileLoaderError, load_drop_file_for_staging
 from .adapters.mp_api import MercadoPagoCredentialsError, MercadoPagoTemporaryError
@@ -47,6 +49,7 @@ DEFAULT_STAGING_DB = rf"{DEFAULT_DATA_DIR}\staging.db"
 DEFAULT_REPORT_OUTPUT = rf"{DEFAULT_DATA_DIR}\reports\review.html"
 DEFAULT_OFX_OUTPUT = rf"{DEFAULT_DATA_DIR}\reports\finanzasmmex.ofx"
 DEFAULT_BACKUP_DIR = rf"{DEFAULT_DATA_DIR}\backups"
+DEFAULT_DROP_DIR = rf"{DEFAULT_DATA_DIR}\drop"
 
 VALID_OWNERS = {"ricardo", "laura", "joint"}
 VALID_DIRECTIONS = {"debit", "credit"}
@@ -336,22 +339,19 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
 
 
 def _run_drop(args: argparse.Namespace) -> NoReturn:
-    if not args.input:
-        _validation_error(
-            "--input is required when --source drop is used",
-            {"field": "--input", "source": "drop"},
-        )
-
+    input_path = Path(args.input or DEFAULT_DROP_DIR)
+    if args.input is None:
+        input_path.mkdir(parents=True, exist_ok=True)
     repo = StagingRepo(args.db)
     db_path = Path(args.db)
     if not db_path.exists():
         repo.init_db(args.schema)
 
+    if input_path.is_dir():
+        _run_drop_directory(args, repo, input_path)
+
     try:
-        result = load_drop_file_for_staging(
-            args.input,
-            rules=repo.list_rules(active_only=True),
-        )
+        data = _persist_drop_file(args, repo, input_path)
     except FileLoaderError as exc:
         _record_job_run_safely(
             repo,
@@ -359,13 +359,124 @@ def _run_drop(args: argparse.Namespace) -> NoReturn:
             status="error",
             error_message=str(exc),
             metadata={
-                "input": args.input,
+                "input": str(input_path),
                 "error_code": exc.error_code,
                 **exc.details,
             },
         )
         raise
+    _emit(True, data=data)
 
+
+def _run_drop_directory(
+    args: argparse.Namespace,
+    repo: StagingRepo,
+    drop_dir: Path,
+) -> NoReturn:
+    processing_dir = drop_dir / "processing"
+    processed_dir = drop_dir / "processed"
+    error_dir = drop_dir / "error"
+    for state_dir in (processing_dir, processed_dir, error_dir):
+        state_dir.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(path for path in drop_dir.iterdir() if path.is_file())
+    summary: dict[str, object] = {
+        "message": "Drop folder ingestion completed",
+        "source": args.source,
+        "writer": args.writer,
+        "db_path": args.db,
+        "incoming_dir": str(drop_dir),
+        "processing_dir": str(processing_dir),
+        "processed_dir": str(processed_dir),
+        "error_dir": str(error_dir),
+        "files_seen": len(files),
+        "files_processed": 0,
+        "files_error": 0,
+        "items_processed": 0,
+        "items_inserted": 0,
+        "items_review": 0,
+        "processed_files": [],
+        "error_files": [],
+    }
+    errors: list[dict[str, object]] = []
+
+    for file_path in files:
+        if not _is_stable_file(file_path):
+            errors.append(
+                _drop_error(
+                    file_path,
+                    "FILE_NOT_STABLE",
+                    "Drop file is still changing",
+                    error_path=None,
+                )
+            )
+            summary["files_error"] = cast(int, summary["files_error"]) + 1
+            continue
+
+        processing_path = _move_to_state(file_path, processing_dir)
+        try:
+            data = _persist_drop_file(args, repo, processing_path)
+        except FileLoaderError as exc:
+            error_path = _move_to_state(processing_path, error_dir)
+            _record_job_run_safely(
+                repo,
+                job_name="drop",
+                status="error",
+                error_message=str(exc),
+                metadata={
+                    "input": str(file_path),
+                    "error_path": str(error_path),
+                    "error_code": exc.error_code,
+                    **exc.details,
+                },
+            )
+            errors.append(
+                _drop_error(
+                    file_path,
+                    exc.error_code,
+                    str(exc),
+                    error_path=error_path,
+                )
+            )
+            summary["files_error"] = cast(int, summary["files_error"]) + 1
+            cast_errors = summary["error_files"]
+            assert isinstance(cast_errors, list)
+            cast_errors.append(str(error_path))
+            continue
+
+        processed_path = _move_to_state(processing_path, processed_dir)
+        summary["files_processed"] = cast(int, summary["files_processed"]) + 1
+        summary["items_processed"] = cast(int, summary["items_processed"]) + cast(
+            int, data["items_processed"]
+        )
+        summary["items_inserted"] = cast(int, summary["items_inserted"]) + cast(
+            int, data["items_inserted"]
+        )
+        summary["items_review"] = cast(int, summary["items_review"]) + cast(
+            int, data["items_review"]
+        )
+        processed_files = summary["processed_files"]
+        assert isinstance(processed_files, list)
+        processed_files.append(str(processed_path))
+
+    if errors and cast(int, summary["files_processed"]) == 0:
+        _emit(False, data=summary, errors=errors, exit_code=2)
+    _emit(
+        True,
+        data=summary,
+        warnings=[f"{len(errors)} drop file(s) moved to error"] if errors else [],
+    )
+
+
+def _persist_drop_file(
+    args: argparse.Namespace,
+    repo: StagingRepo,
+    input_path: Path,
+) -> dict[str, object]:
+    result = load_drop_file_for_staging(
+        input_path,
+        rules=repo.list_rules(active_only=True),
+    )
     artifact_id = repo.insert_raw_artifact(
         artifact_type=result.source_type,
         source_ref=result.source_path,
@@ -386,20 +497,56 @@ def _run_drop(args: argparse.Namespace) -> NoReturn:
             "artifact_id": artifact_id,
         },
     )
-    _emit(
-        True,
-        data={
-            "message": "Drop ingestion completed",
-            "source": args.source,
-            "writer": args.writer,
-            "items_processed": len(result.transactions),
-            "items_inserted": len(result.transactions),
-            "items_review": sum(1 for tx in result.transactions if tx.needs_review),
-            "db_path": args.db,
-            "source_type": result.source_type,
-            "artifact_id": artifact_id,
-        },
+    return {
+        "message": "Drop ingestion completed",
+        "source": args.source,
+        "writer": args.writer,
+        "items_processed": len(result.transactions),
+        "items_inserted": len(result.transactions),
+        "items_review": sum(1 for tx in result.transactions if tx.needs_review),
+        "db_path": args.db,
+        "source_type": result.source_type,
+        "artifact_id": artifact_id,
+    }
+
+
+def _is_stable_file(path: Path, *, wait_seconds: float = 0.05) -> bool:
+    first = path.stat()
+    time.sleep(wait_seconds)
+    second = path.stat()
+    return (
+        first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
     )
+
+
+def _move_to_state(path: Path, state_dir: Path) -> Path:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    target = _unique_state_path(state_dir / path.name)
+    return Path(shutil.move(str(path), str(target)))
+
+
+def _unique_state_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem}.{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not allocate unique drop state path for {path}")
+
+
+def _drop_error(
+    input_path: Path,
+    code: str,
+    message: str,
+    *,
+    error_path: Path | None,
+) -> dict[str, object]:
+    details: dict[str, object] = {"input": str(input_path)}
+    if error_path is not None:
+        details["error_path"] = str(error_path)
+    return {"code": code, "message": message, "details": details}
 
 
 def _run_sql(args: argparse.Namespace) -> NoReturn:

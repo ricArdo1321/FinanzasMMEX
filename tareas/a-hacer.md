@@ -184,3 +184,12 @@ si esta disponible, fallback a texto embebido, marca toda transaccion PDF como
 tests/test_phase4_file_loaders.py tests/test_phase4_foundation.py --basetemp
 .pytest-phase4-3 -p no:cacheprovider` con 17 passed; `ruff check` focal;
 `mypy src/`.
+
+## Revision #32
+
+Implementada ingesta de carpeta drop one-shot: default `C:\Finanzas\drop`,
+estados `processing`/`processed`/`error`, validacion de archivo estable,
+cuarentena de malformados y resumen JSON con archivos procesados/error.
+Evidencia: `pytest tests/test_phase4_drop_job.py tests/test_phase4_file_loaders.py
+tests/test_phase4_foundation.py --basetemp .pytest-phase4-4 -p no:cacheprovider`
+con 20 passed; `ruff check` focal; `mypy src/`.
