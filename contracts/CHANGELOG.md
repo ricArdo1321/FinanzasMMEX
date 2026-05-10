@@ -24,6 +24,27 @@ Registra cambios al contrato JSON `{ok, data, errors, warnings, run_id}` consumi
 
 Ninguno. El envelope no cambia; los comandos existentes mantienen su forma.
 
+## 2026-05-10 - Phase 4.2 deterministic file loaders
+
+### Added
+
+- Loaders deterministas para `OFX`, `QIF`, `CSV` y `XLSX` en `run --source
+  drop`.
+  - `OFX`: parsea `STMTTRN`, `DTPOSTED`, `TRNAMT`, `FITID`, `NAME/MEMO` y
+    cuenta `ACCTID`.
+  - `QIF`: parsea registros `D`, `T`, `P/M`, `L`, `N`.
+  - `CSV`: perfil minimo con columnas `fecha`, `monto`, `comercio`,
+    `cuenta`, `tipo`, `categoria`, `tags` y alias equivalentes.
+  - `XLSX`: lectura minima de primera hoja con OpenXML/stdlib, sin dependencia
+    nueva.
+- `run --source drop` registra `raw_artifacts`, `job_runs`, `artifact_id` y
+  mantiene dedupe por `fitid_synthetic` al reejecutar el mismo archivo.
+
+### Breaking changes
+
+Ninguno. El envelope agrega `source_type` y `artifact_id` en ejecuciones drop
+exitosas.
+
 ## 2026-05-09 - Phase 3 scraping headful
 
 ### Added

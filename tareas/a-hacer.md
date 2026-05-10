@@ -164,3 +164,13 @@ passed; `ruff check src/ tests/`; `mypy src/`; `detect_secrets scan --baseline
 .secrets.baseline`; `git diff --check`. Nota: `tests/test_cli_contract.py`
 sigue con dos fallos preexistentes del writer SQL por `backup_dir` dentro del
 worktree; no se mezcla en #29.
+
+## Revision #30
+
+Implementados loaders deterministas OFX/QIF/CSV/XLSX para `run --source drop`,
+fixtures anonimizadas para OFX/QIF/CSV y fixture XLSX generado en test. Los
+loaders normalizan signo, fecha, comercio, cuenta, categoria/tags, marcan
+`needs_review` ante cuenta/comercio faltante y delegan FITID al ETL. Evidencia:
+`pytest tests/test_phase4_file_loaders.py tests/test_phase4_foundation.py
+tests/test_staging.py --basetemp .pytest-phase4-2 -p no:cacheprovider` con 20
+passed; `ruff check` focal; `mypy src/`.

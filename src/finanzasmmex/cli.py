@@ -366,6 +366,12 @@ def _run_drop(args: argparse.Namespace) -> NoReturn:
         )
         raise
 
+    artifact_id = repo.insert_raw_artifact(
+        artifact_type=result.source_type,
+        source_ref=result.source_path,
+        content_sha256=result.content_sha256,
+        payload_blob=Path(result.source_path).read_bytes(),
+    )
     repo.upsert_batch(result.transactions)
     repo.record_job_run(
         job_name="drop",
@@ -377,6 +383,7 @@ def _run_drop(args: argparse.Namespace) -> NoReturn:
             "input": result.source_path,
             "source_type": result.source_type,
             "content_sha256": result.content_sha256,
+            "artifact_id": artifact_id,
         },
     )
     _emit(
@@ -390,6 +397,7 @@ def _run_drop(args: argparse.Namespace) -> NoReturn:
             "items_review": sum(1 for tx in result.transactions if tx.needs_review),
             "db_path": args.db,
             "source_type": result.source_type,
+            "artifact_id": artifact_id,
         },
     )
 
