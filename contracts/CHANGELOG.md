@@ -45,6 +45,24 @@ Ninguno. El envelope no cambia; los comandos existentes mantienen su forma.
 Ninguno. El envelope agrega `source_type` y `artifact_id` en ejecuciones drop
 exitosas.
 
+## 2026-05-10 - Phase 4.3 PDF review-first loader
+
+### Added
+
+- Loader `PDF` para `run --source drop` con politica review-first.
+  - Usa `pdfplumber` si esta disponible y cae a extraccion de texto embebido
+    cuando no lo esta o no puede leer el archivo.
+  - Toda transaccion PDF queda `needs_review=true` con
+    `pdf_review_required`.
+  - PDFs sin tabla transaccional soportada emiten `FILE_LOADER_CORRUPT` y exit
+    `2`.
+- El parser PDF deja `raw_text` vacio en `CanonicalTx`; la evidencia cruda se
+  conserva en `raw_artifacts` local, no en reportes ni stdout.
+
+### Breaking changes
+
+Ninguno. El comportamiento es aditivo para `run --source drop`.
+
 ## 2026-05-09 - Phase 3 scraping headful
 
 ### Added

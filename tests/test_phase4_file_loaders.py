@@ -7,9 +7,11 @@ import zipfile
 from pathlib import Path
 
 from finanzasmmex.adapters.file_loaders import (
+    FileLoaderCorruptError,
     load_drop_file_for_staging,
     parse_csv_file,
     parse_ofx_file,
+    parse_pdf_file,
     parse_qif_file,
     parse_xlsx_file,
 )
@@ -94,6 +96,47 @@ def test_parse_xlsx_fixture_extracts_rows(tmp_path: Path) -> None:
     assert txs[1].direction == "credit"
 
 
+def test_parse_pdf_fixture_marks_every_transaction_for_review() -> None:
+    txs = parse_pdf_file(FIXTURES / "sample.pdf")
+
+    assert len(txs) == 2
+    assert txs[0].source_type == "pdf"
+    assert txs[0].parser_name == "pdf_file"
+    assert txs[0].content_sha256
+    assert txs[0].raw_text == ""
+    assert txs[0].needs_review is True
+    assert txs[0].review_reason == "pdf_review_required"
+    assert txs[0].direction == "debit"
+
+
+def test_pdf_missing_account_keeps_review_reason(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "ambiguous.pdf"
+    pdf_path.write_text(
+        "%PDF-1.4\nfecha;monto;comercio;tipo\n"
+        "10-05-2026;12340;CAFE DEMO;cargo\n%%EOF",
+        encoding="utf-8",
+    )
+
+    tx = parse_pdf_file(pdf_path)[0]
+
+    assert tx.needs_review is True
+    assert tx.account_alias == "PDF_IMPORT"
+    assert tx.review_reason == "missing_account_alias;pdf_review_required"
+
+
+def test_pdf_without_supported_table_fails_clearly(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "corrupt.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\ncontenido ilegible\n%%EOF")
+
+    try:
+        parse_pdf_file(pdf_path)
+    except FileLoaderCorruptError as exc:
+        assert exc.error_code == "FILE_LOADER_CORRUPT"
+        assert "transaction table" in str(exc)
+    else:  # pragma: no cover - explicit failure branch
+        raise AssertionError("corrupt PDF should fail clearly")
+
+
 def test_drop_loader_prepares_registered_csv_with_fitid() -> None:
     result = load_drop_file_for_staging(FIXTURES / "sample.csv")
 
@@ -103,6 +146,15 @@ def test_drop_loader_prepares_registered_csv_with_fitid() -> None:
     assert {tx.source_file for tx in result.transactions} == {
         str(FIXTURES / "sample.csv")
     }
+
+
+def test_drop_loader_prepares_pdf_with_fitid_and_review() -> None:
+    result = load_drop_file_for_staging(FIXTURES / "sample.pdf")
+
+    assert result.source_type == "pdf"
+    assert len(result.transactions) == 2
+    assert all(tx.fitid_synthetic for tx in result.transactions)
+    assert all(tx.needs_review for tx in result.transactions)
 
 
 def test_cli_drop_csv_is_idempotent_and_records_artifact(tmp_path: Path) -> None:

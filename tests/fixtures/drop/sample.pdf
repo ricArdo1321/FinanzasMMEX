@@ -1,0 +1,6 @@
+%PDF-1.4
+% FinanzasMMEX anonymized text fixture
+fecha;monto;comercio;cuenta;tipo;categoria
+10-05-2026;12340;CAFE DEMO;BE_Ricardo_1234;cargo;Alimentacion
+11-05-2026;50000;ABONO DEMO;BE_Ricardo_1234;abono;Ingresos
+%%EOF

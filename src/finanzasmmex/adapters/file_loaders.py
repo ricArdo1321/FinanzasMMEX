@@ -319,6 +319,30 @@ def parse_xlsx_file(path: Path) -> list[CanonicalTx]:
     )
 
 
+def parse_pdf_file(path: Path) -> list[CanonicalTx]:
+    text = _extract_pdf_text(path)
+    rows = _text_table_rows(text, source_type="pdf")
+    transactions = _rows_to_transactions(
+        rows,
+        default_source_type="pdf",
+        parser_name="pdf_file",
+    )
+    content_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    return [
+        replace(
+            tx,
+            content_sha256=content_sha256,
+            raw_text="",
+            needs_review=True,
+            review_reason=_append_review_reason(
+                tx.review_reason,
+                "pdf_review_required",
+            ),
+        )
+        for tx in transactions
+    ]
+
+
 def _rows_to_transactions(
     rows: list[dict[str, str]],
     *,
@@ -505,6 +529,65 @@ def _split_tags(raw: str | None) -> list[str]:
     return [item.strip() for item in re.split(r"[;,]", raw) if item.strip()]
 
 
+def _append_review_reason(existing: str | None, reason: str) -> str:
+    parts = [part for part in (existing or "").split(";") if part]
+    if reason not in parts:
+        parts.append(reason)
+    return ";".join(parts)
+
+
+def _extract_pdf_text(path: Path) -> str:
+    text = ""
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(path) as pdf:
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            if text.strip():
+                return text
+    except Exception:
+        text = ""
+
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        return path.read_bytes().decode("latin-1", errors="ignore")
+
+
+def _text_table_rows(text: str, *, source_type: FileSourceType) -> list[dict[str, str]]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    table_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if "fecha" in normalize_merchant(line).lower()
+            and "monto" in normalize_merchant(line).lower()
+        ),
+        None,
+    )
+    if table_start is None:
+        raise FileLoaderCorruptError(
+            "PDF text does not contain a supported transaction table",
+            details={"source_type": source_type},
+        )
+    header = lines[table_start]
+    delimiter = ";" if header.count(";") >= 2 else ","
+    table_lines = []
+    for line in lines[table_start:]:
+        if line.startswith("%") and line != header:
+            break
+        if line.count(delimiter) >= 1:
+            table_lines.append(line)
+    table = "\n".join(table_lines)
+    reader = csv.DictReader(io.StringIO(table), delimiter=delimiter)
+    if reader.fieldnames is None:
+        raise FileLoaderCorruptError(
+            "PDF transaction table is missing headers",
+            details={"source_type": source_type},
+        )
+    return [_normalize_row(row) for row in reader]
+
+
 def _read_xlsx_rows(path: Path) -> list[dict[str, str]]:
     try:
         with zipfile.ZipFile(path) as archive:
@@ -578,3 +661,4 @@ register_file_loader(".ofx", parse_ofx_file)
 register_file_loader(".qif", parse_qif_file)
 register_file_loader(".csv", parse_csv_file)
 register_file_loader(".xlsx", parse_xlsx_file)
+register_file_loader(".pdf", parse_pdf_file)

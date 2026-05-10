@@ -174,3 +174,13 @@ loaders normalizan signo, fecha, comercio, cuenta, categoria/tags, marcan
 `pytest tests/test_phase4_file_loaders.py tests/test_phase4_foundation.py
 tests/test_staging.py --basetemp .pytest-phase4-2 -p no:cacheprovider` con 20
 passed; `ruff check` focal; `mypy src/`.
+
+## Revision #31
+
+Implementado loader PDF review-first para `run --source drop`: usa `pdfplumber`
+si esta disponible, fallback a texto embebido, marca toda transaccion PDF como
+`needs_review=true`, deja `raw_text` vacio y falla claro con
+`FILE_LOADER_CORRUPT` cuando no hay tabla soportada. Evidencia: `pytest
+tests/test_phase4_file_loaders.py tests/test_phase4_foundation.py --basetemp
+.pytest-phase4-3 -p no:cacheprovider` con 17 passed; `ruff check` focal;
+`mypy src/`.
