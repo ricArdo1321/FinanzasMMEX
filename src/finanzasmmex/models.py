@@ -11,7 +11,7 @@ class CanonicalTx:
     tx_uid: str = field(default_factory=lambda: str(uuid4()))
     owner: Literal["ricardo", "laura", "joint"] = "ricardo"
     source_type: Literal[
-        "email", "mp_api", "scraping", "ofx", "csv", "pdf", "manual"
+        "email", "mp_api", "scraping", "ofx", "qif", "csv", "xlsx", "pdf", "manual"
     ] = "email"
     source_file: str | None = None  # path local o gmail message-id
     source_ref: str | None = None  # message-id, run_id de scraping, etc.

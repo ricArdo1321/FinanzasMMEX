@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NoReturn
 
+from .adapters.file_loaders import FileLoaderError, load_drop_file_for_staging
 from .adapters.mp_api import MercadoPagoCredentialsError, MercadoPagoTemporaryError
 from .adapters.scraping_base import ScrapingError, ScrapingLoginError
 from .etl.fitid import ensure_fitid
@@ -28,7 +29,7 @@ from .orchestrator.jobs import (
     run_scraping_cmr,
 )
 from .secrets.vault import Vault
-from .staging.repo import StagingRepo
+from .staging.repo import JobRunStatus, StagingRepo
 from .writer.mmex_sql import (
     MmexBackupError,
     MmexLockedError,
@@ -334,6 +335,65 @@ def _run_mp(args: argparse.Namespace) -> NoReturn:
     )
 
 
+def _run_drop(args: argparse.Namespace) -> NoReturn:
+    if not args.input:
+        _validation_error(
+            "--input is required when --source drop is used",
+            {"field": "--input", "source": "drop"},
+        )
+
+    repo = StagingRepo(args.db)
+    db_path = Path(args.db)
+    if not db_path.exists():
+        repo.init_db(args.schema)
+
+    try:
+        result = load_drop_file_for_staging(
+            args.input,
+            rules=repo.list_rules(active_only=True),
+        )
+    except FileLoaderError as exc:
+        _record_job_run_safely(
+            repo,
+            job_name="drop",
+            status="error",
+            error_message=str(exc),
+            metadata={
+                "input": args.input,
+                "error_code": exc.error_code,
+                **exc.details,
+            },
+        )
+        raise
+
+    repo.upsert_batch(result.transactions)
+    repo.record_job_run(
+        job_name="drop",
+        status="ok",
+        items_processed=len(result.transactions),
+        items_inserted=len(result.transactions),
+        items_review=sum(1 for tx in result.transactions if tx.needs_review),
+        metadata={
+            "input": result.source_path,
+            "source_type": result.source_type,
+            "content_sha256": result.content_sha256,
+        },
+    )
+    _emit(
+        True,
+        data={
+            "message": "Drop ingestion completed",
+            "source": args.source,
+            "writer": args.writer,
+            "items_processed": len(result.transactions),
+            "items_inserted": len(result.transactions),
+            "items_review": sum(1 for tx in result.transactions if tx.needs_review),
+            "db_path": args.db,
+            "source_type": result.source_type,
+        },
+    )
+
+
 def _run_sql(args: argparse.Namespace) -> NoReturn:
     if not args.mmex_db:
         _validation_error(
@@ -483,17 +543,31 @@ def _validate_staging_db(db_path: str) -> None:
 
 def _record_deferred_job(db_path: str, job_name: str, error_message: str) -> None:
     try:
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO job_runs (
-                    run_id, job_name, started_at, finished_at, status,
-                    error_message
-                ) VALUES (?, ?, datetime('now'), datetime('now'), ?, ?)
-                """,
-                (str(uuid.uuid4()), job_name, "deferred", error_message),
-            )
-            conn.commit()
+        repo = StagingRepo(db_path)
+        repo.record_job_run(
+            job_name=job_name,
+            status="deferred",
+            error_message=error_message,
+        )
+    except sqlite3.Error:
+        return
+
+
+def _record_job_run_safely(
+    repo: StagingRepo,
+    *,
+    job_name: str,
+    status: JobRunStatus,
+    error_message: str,
+    metadata: dict[str, object],
+) -> None:
+    try:
+        repo.record_job_run(
+            job_name=job_name,
+            status=status,
+            error_message=error_message,
+            metadata=metadata,
+        )
     except sqlite3.Error:
         return
 
@@ -1264,7 +1338,7 @@ def main() -> None:
                 _run_sql(args)
             else:
                 if args.source not in {
-                    "gmail", "mp", "all", "scraping-be", "scraping-cmr"
+                    "gmail", "mp", "all", "scraping-be", "scraping-cmr", "drop"
                 }:
                     _emit(
                         False,
@@ -1301,6 +1375,8 @@ def main() -> None:
                         report_output_path=args.report_output,
                     )
                     _emit(True, data=result.as_dict())
+                elif args.source == "drop":
+                    _run_drop(args)
                 else:
                     _run_mp(args)
         elif args.command == "login":
@@ -1337,6 +1413,18 @@ def main() -> None:
             exit_code=e.exit_code,
         )
     except ScrapingError as e:
+        _emit(
+            False,
+            errors=[
+                {
+                    "code": e.error_code,
+                    "message": str(e),
+                    "details": e.details,
+                }
+            ],
+            exit_code=e.exit_code,
+        )
+    except FileLoaderError as e:
         _emit(
             False,
             errors=[

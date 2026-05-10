@@ -1,12 +1,41 @@
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Literal
+from uuid import uuid4
 
 from ..etl.categorize import CategoryRule
 from ..models import CanonicalTx
+
+JobRunStatus = Literal["running", "ok", "error", "deferred"]
+
+
+@dataclass(frozen=True)
+class RawArtifactRecord:
+    artifact_id: str
+    artifact_type: str
+    source_ref: str
+    content_sha256: str
+    payload_blob: bytes | None
+    payload_text: str | None
+    fetched_at: str
+
+
+@dataclass(frozen=True)
+class JobRunRecord:
+    run_id: str
+    job_name: str
+    started_at: str
+    finished_at: str | None
+    status: JobRunStatus
+    items_processed: int
+    items_inserted: int
+    items_review: int
+    error_message: str | None
+    metadata: dict[str, Any] | None
 
 
 class StagingRepo:
@@ -282,6 +311,160 @@ class StagingRepo:
             conn.commit()
             return cursor.lastrowid  # type: ignore[return-value]
 
+    def insert_raw_artifact(
+        self,
+        *,
+        artifact_type: str,
+        source_ref: str,
+        content_sha256: str,
+        payload_blob: bytes | None = None,
+        payload_text: str | None = None,
+        artifact_id: str | None = None,
+    ) -> str:
+        resolved_id = artifact_id or str(uuid4())
+        sql = """
+        INSERT OR IGNORE INTO raw_artifacts (
+            artifact_id, artifact_type, source_ref, content_sha256,
+            payload_blob, payload_text
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """
+        with closing(self._get_connection()) as conn:
+            conn.execute(
+                sql,
+                (
+                    resolved_id,
+                    artifact_type,
+                    source_ref,
+                    content_sha256,
+                    sqlite3.Binary(payload_blob) if payload_blob is not None else None,
+                    payload_text,
+                ),
+            )
+            row = conn.execute(
+                "SELECT artifact_id FROM raw_artifacts WHERE content_sha256 = ?",
+                (content_sha256,),
+            ).fetchone()
+            conn.commit()
+            if row is None:
+                raise sqlite3.IntegrityError("raw_artifacts insert did not persist")
+            return str(row["artifact_id"])
+
+    def get_raw_artifact_by_sha(
+        self,
+        content_sha256: str,
+    ) -> RawArtifactRecord | None:
+        with closing(self._get_connection()) as conn:
+            row = conn.execute(
+                "SELECT * FROM raw_artifacts WHERE content_sha256 = ?",
+                (content_sha256,),
+            ).fetchone()
+            return self._row_to_raw_artifact(row) if row else None
+
+    def start_job_run(
+        self,
+        *,
+        job_name: str,
+        metadata: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        resolved_id = run_id or str(uuid4())
+        with closing(self._get_connection()) as conn:
+            conn.execute(
+                """
+                INSERT INTO job_runs (
+                    run_id, job_name, started_at, status, metadata_json
+                ) VALUES (?, ?, datetime('now'), 'running', ?)
+                """,
+                (
+                    resolved_id,
+                    job_name,
+                    json.dumps(metadata, sort_keys=True) if metadata else None,
+                ),
+            )
+            conn.commit()
+            return resolved_id
+
+    def finish_job_run(
+        self,
+        run_id: str,
+        *,
+        status: JobRunStatus,
+        items_processed: int = 0,
+        items_inserted: int = 0,
+        items_review: int = 0,
+        error_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        with closing(self._get_connection()) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_runs
+                SET finished_at = datetime('now'),
+                    status = ?,
+                    items_processed = ?,
+                    items_inserted = ?,
+                    items_review = ?,
+                    error_message = ?,
+                    metadata_json = COALESCE(?, metadata_json)
+                WHERE run_id = ?
+                """,
+                (
+                    status,
+                    items_processed,
+                    items_inserted,
+                    items_review,
+                    error_message,
+                    json.dumps(metadata, sort_keys=True) if metadata else None,
+                    run_id,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def record_job_run(
+        self,
+        *,
+        job_name: str,
+        status: JobRunStatus,
+        items_processed: int = 0,
+        items_inserted: int = 0,
+        items_review: int = 0,
+        error_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> str:
+        resolved_id = run_id or str(uuid4())
+        with closing(self._get_connection()) as conn:
+            conn.execute(
+                """
+                INSERT INTO job_runs (
+                    run_id, job_name, started_at, finished_at, status,
+                    items_processed, items_inserted, items_review,
+                    error_message, metadata_json
+                ) VALUES (?, ?, datetime('now'), datetime('now'), ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resolved_id,
+                    job_name,
+                    status,
+                    items_processed,
+                    items_inserted,
+                    items_review,
+                    error_message,
+                    json.dumps(metadata, sort_keys=True) if metadata else None,
+                ),
+            )
+            conn.commit()
+            return resolved_id
+
+    def get_job_run(self, run_id: str) -> JobRunRecord | None:
+        with closing(self._get_connection()) as conn:
+            row = conn.execute(
+                "SELECT * FROM job_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            return self._row_to_job_run(row) if row else None
+
     def list_rules(self, *, active_only: bool = False) -> list[CategoryRule]:
         sql = "SELECT * FROM category_rules"
         params: list[Any] = []
@@ -363,6 +546,32 @@ class StagingRepo:
             fuzzy_threshold=row["fuzzy_threshold"],
             priority=row["priority"],
             active=bool(row["active"]),
+        )
+
+    def _row_to_raw_artifact(self, row: sqlite3.Row) -> RawArtifactRecord:
+        return RawArtifactRecord(
+            artifact_id=row["artifact_id"],
+            artifact_type=row["artifact_type"],
+            source_ref=row["source_ref"],
+            content_sha256=row["content_sha256"],
+            payload_blob=row["payload_blob"],
+            payload_text=row["payload_text"],
+            fetched_at=row["fetched_at"],
+        )
+
+    def _row_to_job_run(self, row: sqlite3.Row) -> JobRunRecord:
+        metadata_json = row["metadata_json"]
+        return JobRunRecord(
+            run_id=row["run_id"],
+            job_name=row["job_name"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            status=row["status"],
+            items_processed=row["items_processed"],
+            items_inserted=row["items_inserted"],
+            items_review=row["items_review"],
+            error_message=row["error_message"],
+            metadata=json.loads(metadata_json) if metadata_json else None,
         )
 
     def _row_to_tx(self, row: sqlite3.Row) -> CanonicalTx:

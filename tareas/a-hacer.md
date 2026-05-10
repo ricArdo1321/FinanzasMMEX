@@ -135,3 +135,32 @@ Estado: abierta; auditoria 2026-05-09 detecto implementacion parcial. Orden crit
 4. #28 Gate final: fixtures HTML, changelog, ruff/mypy/pytest/detect-secrets y checklists especialistas.
 
 No cerrar #4 hasta que #25-#28 esten cerrados y los gates pasen.
+
+---
+
+# Issue #5 - Fase 4 Archivos, Reportes y Notificaciones
+
+Estado: abierta; auditoria 2026-05-09 confirma brechas. Orden critico:
+1. #29 F4.1 Base loaders/drop: contrato, qif/xlsx, raw_artifacts/job_runs.
+2. #30 F4.2 Loaders OFX/QIF/CSV/XLSX + fixtures.
+3. #31 F4.3 PDF review-first + fixtures anonimizadas.
+4. #32 F4.4 Drop watcher: processed/error, cuarentena, idempotencia.
+5. #33 F4.5 Dashboards/reports HTML mensuales.
+6. #34 F4.6 Notificaciones needs_review n8n/Telegram sin PII.
+7. #35 F4.7 Bulk review CLI.
+8. #36 F4.8 WPF filtros, bulk review y reportes.
+9. #37 F4.9 Gate final: changelog, especialistas y checks.
+
+No cerrar #5 hasta cerrar subissues F4, resolver o declarar bloqueo externo #17, y pasar gates.
+
+## Revision #29
+
+Implementada base Fase 4.1: contrato comun para loaders de archivos, soporte
+`source_type` para `qif`/`xlsx`, metodos reutilizables `raw_artifacts` y
+`job_runs`, dispatch inicial `run --source drop` con errores typed y changelog
+de contrato. Evidencia: `pytest tests/test_phase4_foundation.py
+tests/test_staging.py --basetemp .pytest-phase4-1 -p no:cacheprovider` con 13
+passed; `ruff check src/ tests/`; `mypy src/`; `detect_secrets scan --baseline
+.secrets.baseline`; `git diff --check`. Nota: `tests/test_cli_contract.py`
+sigue con dos fallos preexistentes del writer SQL por `backup_dir` dentro del
+worktree; no se mezcla en #29.

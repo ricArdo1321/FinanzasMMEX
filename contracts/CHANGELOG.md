@@ -2,6 +2,28 @@
 
 Registra cambios al contrato JSON `{ok, data, errors, warnings, run_id}` consumido por la UI WPF. La forma del envelope se valida contra `contracts/envelope.schema.json`.
 
+## 2026-05-10 - Phase 4.1 loader foundation
+
+### Added
+
+- `run --source drop` entra al dispatch publico del CLI. En este corte aun no
+  implementa parsers concretos; archivos no soportados o loaders pendientes
+  devuelven envelope JSON con `FILE_LOADER_UNSUPPORTED` y exit `2`.
+- Base de loaders de archivos para `ofx`, `qif`, `csv`, `xlsx` y `pdf`.
+  Cualquier loader registrado pasa sus transacciones por
+  `prepare_batch_for_staging(...)` antes de insertar en staging.
+- `CanonicalTx.source_type` acepta `qif` y `xlsx` ademas de los tipos previos.
+- `StagingRepo` expone metodos reutilizables para `raw_artifacts` y
+  `job_runs`, incluyendo corridas `running`, `ok`, `error` y `deferred`.
+- Errores typed de loaders:
+  - `FILE_LOADER_UNSUPPORTED`, `FILE_LOADER_AMBIGUOUS` y
+    `FILE_LOADER_CORRUPT` -> exit `2`.
+  - `FILE_LOADER_TEMPORARY` -> exit `5`.
+
+### Breaking changes
+
+Ninguno. El envelope no cambia; los comandos existentes mantienen su forma.
+
 ## 2026-05-09 - Phase 3 scraping headful
 
 ### Added
